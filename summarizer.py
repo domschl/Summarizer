@@ -2,6 +2,9 @@ from mlx_vlm import load, generate
 from mlx_vlm.prompt_utils import apply_chat_template
 from mlx_vlm.utils import load_config
 import math
+import shlex
+
+from docling.document_converter import DocumentConverter
 
 # Load model and processor
 model_id = "mlx-community/gemma-4-26b-a4b-it-4bit"
@@ -15,7 +18,7 @@ def get_answer_from_output(output):
         return text.split("<channel|>")[-1].strip()
     return text
 
-def chunked_summarize(content, filepath):
+def chunked_summarize(content, filepath, extra_instructions: str = ""):
     """Map-Reduce strategy for large files to avoid VRAM overflow."""
     # 50,000 chars is roughly 12k tokens - safe for 26B model on most Macs
     chunk_size = 250000 
@@ -32,9 +35,10 @@ def chunked_summarize(content, filepath):
         
         print(f"--> Summarizing chunk {i+1}/{num_chunks}...", flush=True)
         
+        instruction = f"Briefly summarize this part of the document. {extra_instructions}" if extra_instructions else "Briefly summarize this part of the document:"
         prompt = apply_chat_template(
             processor, config,
-            [{"role": "user", "content": f"Briefly summarize this part of the document:\n\n{chunk}"}],
+            [{"role": "user", "content": f"{instruction}\n\n{chunk}"}],
             num_images=0
         )
         
@@ -42,8 +46,8 @@ def chunked_summarize(content, filepath):
         output = generate(
             model, processor, prompt, [],
             max_tokens=400,
-            temp=0.0,
-            repetition_penalty=1.2,
+            temp=0.2,
+            repetition_penalty=1.1,
             kv_bits=3.5,
             kv_quant_scheme="turboquant",
             verbose=False
@@ -52,17 +56,21 @@ def chunked_summarize(content, filepath):
 
     print("\n--> Consolidating final summary...")
     consolidated_text = "\n\n".join(chunk_summaries)
+    
+    base_instruction = "Please combine them into a single coherent, detailed summary"
+    final_instruction = f"{base_instruction}. {extra_instructions}" if extra_instructions else base_instruction
+    
     final_prompt = apply_chat_template(
         processor, config,
-        [{"role": "user", "content": f"The following are summaries of segments from '{filepath}'. Please combine them into a single coherent, detailed summary:\n\n{consolidated_text}"}],
+        [{"role": "user", "content": f"The following are summaries of segments from '{filepath}'. {final_instruction}:\n\n{consolidated_text}"}],
         num_images=0
     )
     
     return generate(
         model, processor, final_prompt, [],
         max_tokens=1500,
-        temp=0.0,
-        repetition_penalty=1.2,
+        temp=0.2,
+        repetition_penalty=1.1,
         kv_bits=3.5,
         kv_quant_scheme="turboquant",
         verbose=False
@@ -83,21 +91,46 @@ while True:
             break
             
         if user_input.startswith(("/load ", "/summarize ")):
-            is_summarize = user_input.startswith("/summarize")
-            filepath = user_input.split(" ", 1)[1].strip()
+            try:
+                parts = shlex.split(user_input)
+            except ValueError as e:
+                print(f"Error parsing command: {e}")
+                continue
+                
+            if len(parts) < 2:
+                print("Usage: /load <filepath> [instructions] or /summarize <filepath> [instructions]")
+                continue
+                
+            command = parts[0]
+            filepath = parts[1]
+            extra_info = " ".join(parts[2:]).strip()
+            is_summarize = command == "/summarize"
+
+            if is_summarize:
+                print(f"Loading {filepath}...")
+                print(f"Extra instructions: {extra_info}")
             
             try:
-                with open(filepath, "r", encoding="utf-8") as f:
-                    file_content = f.read()
+                # Handle non-text files using Docling
+                if filepath.lower().endswith((".pdf", ".docx", ".pptx", ".xlsx", ".html")):
+                    print(f"Converting '{filepath}' to markdown using Docling (this may take a moment)...")
+                    converter = DocumentConverter()
+                    result = converter.convert(filepath)
+                    file_content = result.document.export_to_markdown()
+                else:
+                    with open(filepath, "r", encoding="utf-8") as f:
+                        file_content = f.read()
                 
                 # If the file is huge, use chunked summarization immediately
                 if is_summarize and len(file_content) > 100000:
-                    output = chunked_summarize(file_content, filepath)
+                    output = chunked_summarize(file_content, filepath, extra_info)
                 else:
                     if is_summarize:
-                        msg = f"The following is a text file contents from '{filepath}'. Please provide a concise summary of its main points:\n\n{file_content}"
+                        instruction = extra_info if extra_info else "Please provide a concise summary of its main points"
+                        msg = f"The following is a text file contents from '{filepath}'. {instruction}:\n\n{file_content}"
                     else:
-                        msg = f"I have loaded the file from '{filepath}'. The content is as follows:\n\n{file_content}\n\nWhat would you like me to do with this text?"
+                        instruction = extra_info if extra_info else "What would you like me to do with this text?"
+                        msg = f"I have loaded the file from '{filepath}'. The content is as follows:\n\n{file_content}\n\n{instruction}"
                     
                     chat_history.append({"role": "user", "content": msg})
                     print(f"Loaded {len(file_content)} characters from '{filepath}'.")
@@ -107,8 +140,8 @@ while True:
                     output = generate(
                         model, processor, formatted_prompt, [], 
                         max_tokens=2000, 
-                        temp=0.0,
-                        repetition_penalty=1.2,
+                        temp=0.2,
+                        repetition_penalty=1.1,
                         kv_bits=3.5, 
                         kv_quant_scheme="turboquant", 
                         verbose=False
@@ -123,7 +156,7 @@ while True:
             output = generate(
                 model, processor, formatted_prompt, [], 
                 max_tokens=2000, 
-                temp=0.0,
+                temp=0.1,  # 0.0 default
                 repetition_penalty=1.2,
                 kv_bits=3.5, 
                 kv_quant_scheme="turboquant", 
