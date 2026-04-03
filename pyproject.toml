@@ -1,7 +1,7 @@
 [project]
-name = "g4tests"
+name = "summarizer"
 version = "0.1.0"
-description = "MLX tests with Gemma 4"
+description = "MLX / Gemma 4 summarizer"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
