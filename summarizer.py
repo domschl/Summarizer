@@ -49,14 +49,14 @@ class Summarizer:
         
         instruction = f"Briefly summarize this part of the document. {extra_instructions}" if extra_instructions else "Briefly summarize this part of the document:"
         prompt = apply_chat_template(
-            processor, config,
+            self.processor, self.config,
             [{"role": "user", "content": f"{instruction}\n\n{chunk}"}],
             num_images=0
         )
         
         # Generate with lower max_tokens for speed during mapping
         output = generate(
-            model, processor, prompt, [],
+            self.model, self.processor, prompt, [],
             max_tokens=400,
             temp=0.2,
             repetition_penalty=1.1,
@@ -64,7 +64,7 @@ class Summarizer:
             kv_quant_scheme="turboquant",
             verbose=False
         )
-        chunk_summaries.append(get_answer_from_output(output))
+        chunk_summaries.append(self.get_answer_from_output(output))
 
         print("\n--> Consolidating final summary...")
         consolidated_text = "\n\n".join(chunk_summaries)
@@ -73,13 +73,13 @@ class Summarizer:
         final_instruction = f"{base_instruction}. {extra_instructions}" if extra_instructions else base_instruction
     
         final_prompt = apply_chat_template(
-            processor, config,
+            self.processor, self.config,
             [{"role": "user", "content": f"The following are summaries of segments from '{filepath}'. {final_instruction}:\n\n{consolidated_text}"}],
             num_images=0
         )
     
         return generate(
-            model, processor, final_prompt, [],
+            self.model, self.processor, final_prompt, [],
             max_tokens=1500,
             temp=0.2,
             repetition_penalty=1.1,
@@ -121,7 +121,7 @@ class ChatAgent:
                     try:
                         parts = shlex.split(user_input)
                     except ValueError as e:
-                        print(f"Error parsing command: {e}")
+                        self.log.error(f"Error parsing command: {e}")
                         continue
                 
                     if len(parts) < 2:
@@ -174,7 +174,7 @@ class ChatAgent:
                                 verbose=False
                             )
                     except Exception as e:
-                        print(f"Error loading file: {e}")
+                        self.log.error(f"Error loading file: {e}")
                         continue
                 else:
                     self.chat_history.append({"role": "user", "content": user_input})
@@ -203,10 +203,8 @@ class ChatAgent:
                     print(f"\nAssistant: {full_response}\n")
                     self.chat_history.append({"role": "assistant", "content": full_response})
                     
-            except KeyboardInterrupt:
-                break
             except Exception as e:
-                print(f"Error: {e}")
+                self.log.error(f"Error: {e}")
                 break
 
         print("\nChat ended.")
@@ -229,4 +227,7 @@ if __name__ == "__main__":
             json.dump(config, f, indent=4)
             print(f"Created default config file at {config_file}")
     ca = ChatAgent(**config)
-    ca.run()
+    try:
+        ca.run()
+    except KeyboardInterrupt:
+        print("\nChat ended.")
