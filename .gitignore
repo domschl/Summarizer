@@ -7,5 +7,6 @@ wheels/
 *.egg-info
 *.txt
 *.pdf
+*.epub
 # Virtual environments
 .venv
