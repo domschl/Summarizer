@@ -144,9 +144,9 @@ class ArtifactCache:
         if not os.path.exists(filename):
             self.log.error(f"File not found: {filename}")
             return None
-        with open(filename, "r", encoding="utf-8") as f:
+        with open(filename, "rb") as f:
             file_content = f.read()
-        return hashlib.sha256(file_content.encode()).hexdigest()
+        return hashlib.sha256(file_content).hexdigest()
 
     def set(self, source_file: str, artifact_type: str, artifact: str, hash: str | None = None) -> bool:
         h = hash or self.get_hash(source_file)
