@@ -5,8 +5,31 @@ build/
 dist/
 wheels/
 *.egg-info
+.venv/
+
+# Node.js
+node_modules/
+.npm
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+
+# Vite
+.vite/
+
+# Agent artifacts
+web-interface/backend/uploads/
+web-interface/backend/requirements.txt
+
+# Common ignores
+.DS_Store
+.env
+.env.local
+.env.*.local
+
+# Keep sample data ignored as per original
 *.txt
 *.pdf
 *.epub
-# Virtual environments
-.venv
+*.lock
