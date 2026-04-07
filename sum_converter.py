@@ -6,12 +6,48 @@ from datetime import datetime, timezone
 import xml.etree.ElementTree as ET
 import base64
 import io
+import math
 import yaml
 import tempfile
+import threading
+import gc
 from typing import Any
 from PIL import Image
 
+try:
+    import torch
+    if torch.backends.mps.is_available():
+        HAS_MPS = True
+    else:
+        HAS_MPS = False
+except ImportError:
+    HAS_MPS = False
+
+try:
+    from mlx_vlm import load, generate
+    from mlx_vlm.prompt_utils import apply_chat_template
+    from mlx_vlm.utils import load_config
+    MLX_AVAILABLE = True
+except ImportError:
+    MLX_AVAILABLE = False
+    # Mocking for type checking or non-running environments
+    def load(*args, **kwargs): raise ImportError("MLX is not available on this platform.")
+    def generate(*args, **kwargs): raise ImportError("MLX is not available on this platform.")
+    def apply_chat_template(*args, **kwargs): raise ImportError("MLX is not available on this platform.")
+    def load_config(*args, **kwargs): raise ImportError("MLX is not available on this platform.")
+
 from docling.document_converter import DocumentConverter
+
+
+def clear_memory():
+    """Force garbage collection and clear GPU/MPS caches if possible."""
+    gc.collect()
+    if HAS_MPS:
+        try:
+            torch.mps.empty_cache()
+        except Exception:
+            pass
+    # If CUDA was used, we would add torch.cuda.empty_cache() here
 
 
 def atomic_write(filepath: str, content: str | bytes, encoding: str = "utf-8"):
@@ -75,6 +111,52 @@ class MarkdownConverter:
         else:
             self.log.error(f"Unsupported file type: {filepath}")
             return None
+
+    @staticmethod   
+    def split_header_content(text:str) -> tuple[str, str]:
+        separator1 = "---\n"
+        separator2 = "\n---\n"
+        if text.startswith(separator1):
+            d1 = 0
+        else:
+            d1 = text.find(separator2)
+            if d1 > 10 or d1 == -1:
+                return ("", text)
+            d1 += 1
+         
+        d2 = text[d1+len(separator1):].find(separator2)
+        if d2 == -1:
+            return ("", text)
+        d2 += d1+len(separator1)
+        header = text[d1+len(separator1):d2+1]
+        content = text[d2+len(separator2):]
+        return (header, content)
+         
+    @staticmethod
+    def parse_markdown(md_text:str):
+        frontmatter, content = MarkdownConverter.split_header_content(md_text)
+        try:
+            yaml_metadata: dict[str, Any]|Any = yaml.safe_load(frontmatter)  # pyright: ignore[reportAny, reportExplicitAny]
+        except Exception:
+            yaml_metadata = None
+        return yaml_metadata, content
+
+    @staticmethod
+    def assemble_markdown(metadata, md_text) -> str:  # pyright: ignore[reportExplicitAny]
+        if metadata  == None:
+            return md_text
+            
+        filtered_metadata: dict[str, Any] = {}
+        for k, v in metadata.items():
+            if isinstance(v, list) and len(v) == 0:
+                continue
+            if isinstance(v, str) and v == "":
+                continue
+            filtered_metadata[k] = v
+            
+        header = yaml.dump(filtered_metadata, default_flow_style=False, indent=2)
+        return f"---\n{header}---\n{md_text}"
+
 
 
 class CalibreConverter:
@@ -289,49 +371,6 @@ class CalibreConverter:
         
         return metadata
 
-    def split_header_content(self, text:str) -> tuple[str, str]:
-        separator1 = "---\n"
-        separator2 = "\n---\n"
-        if text.startswith(separator1):
-            d1 = 0
-        else:
-            d1 = text.find(separator2)
-            if d1 > 10 or d1 == -1:
-                return ("", text)
-            d1 += 1
-         
-        d2 = text[d1+len(separator1):].find(separator2)
-        if d2 == -1:
-            return ("", text)
-        d2 += d1+len(separator1)
-        header = text[d1+len(separator1):d2+1]
-        content = text[d2+len(separator2):]
-        return (header, content)
-         
-    def parse_markdown(self, md_text:str):
-        frontmatter, content = self.split_header_content(md_text)
-        try:
-            yaml_metadata: dict[str, Any]|Any = yaml.safe_load(frontmatter)  # pyright: ignore[reportAny, reportExplicitAny]
-        except Exception as e:
-            self.log.error(f"Error parsing frontmatter: {e}")
-            yaml_metadata = None
-        return yaml_metadata, content
-
-    def assemble_markdown(self, metadata, md_text) -> str:  # pyright: ignore[reportExplicitAny]
-        if metadata  == None:
-            return md_text
-            
-        filtered_metadata: dict[str, Any] = {}
-        for k, v in metadata.items():
-            if isinstance(v, list) and len(v) == 0:
-                continue
-            if isinstance(v, str) and v == "":
-                continue
-            filtered_metadata[k] = v
-            
-        header = yaml.dump(filtered_metadata, default_flow_style=False, indent=2)
-        return f"---\n{header}---\n{md_text}"
-
     def mirror_library(self, target_series: list[str] | None = None):
         # walk calibre library path and look for 'metadata.opf':
         for root, _dirs, files in os.walk(self.calibre_path):
@@ -366,11 +405,11 @@ class CalibreConverter:
                         self.log.info(f"File already exists: {target_file}")
                         with open(target_file, 'r') as f:
                             md_text = f.read()
-                        yaml_metadata, _content = self.parse_markdown(md_text)
+                        yaml_metadata, _content = MarkdownConverter.parse_markdown(md_text)
                         if yaml_metadata is None:
                             # Add metadata:
                             metadata = self.parse_calibre_metadata(opf_path, None, create_icon=True)
-                            md_text = self.assemble_markdown(metadata, md_text)
+                            md_text = MarkdownConverter.assemble_markdown(metadata, md_text)
                             atomic_write(target_file, md_text)
                             self.log.info(f"Successfully added metadata to '{target_file}'")
                             continue
@@ -384,9 +423,134 @@ class CalibreConverter:
                     markdown = self.assemble_markdown(metadata, markdown)
                     atomic_write(target_file, markdown)
                     self.log.info(f"Successfully converted '{source_file}' to markdown: {target_file}")
+                    
+                    # Manually clear large strings and trigger GC
+                    del markdown
+                    del metadata
+                    clear_memory()
 
 
-def calibre_main():
+class Summarizer:
+    def __init__(self, model=None, processor=None, config: dict[str, object] | None = None, chunk_size: int = 50000) -> None:
+        self.log: logging.Logger = logging.getLogger("Summarizer")
+        if model is None or processor is None or config is None:
+            model_id = "mlx-community/gemma-4-26b-a4b-it-4bit"
+            self.model, self.processor = load(model_id)
+            self.config = load_config(model_id)
+        else:
+            self.model = model
+            self.processor = processor
+            self.config = config
+        self.chunk_size: int = chunk_size
+
+    def get_answer_from_output(self, output: object) -> str:
+        """Utility to strip thinking tokens and return the final answer."""
+        if hasattr(output, "text"):
+            text = str(getattr(output, "text"))
+        else:
+            text = str(output)
+        if "<channel|>" in text:
+            return text.split("<channel|>")[-1].strip()
+        return text
+
+    def chunked_summarize(self, content: str, filepath: str, extra_instructions: str = "") -> object:
+        """Map-Reduce strategy for large files to avoid VRAM overflow."""
+        # 50,000 chars is roughly 12k tokens - safe for 26B model on most Macs
+        chunk_size = self.chunk_size 
+        num_chunks = math.ceil(len(content) / chunk_size)
+        
+        chunk_summaries = []
+        for i in range(num_chunks):
+            start = i * chunk_size
+            end = start + chunk_size
+            chunk = content[start:end]
+        
+            print(f"--> Summarizing chunk {i+1}/{num_chunks}...", flush=True)
+            
+            instruction = f"Briefly summarize this part of the document. {extra_instructions}" if extra_instructions else "Briefly summarize this part of the document:"
+            prompt = apply_chat_template(
+                self.processor, self.config,
+                [{"role": "user", "content": f"{instruction}\n\n{chunk}"}],
+                num_images=0
+            )
+            
+            # Generate with lower max_tokens for speed during mapping
+            output = generate(
+                self.model, self.processor, prompt, [],
+                max_tokens=400,
+                temp=0.2,
+                repetition_penalty=1.1,
+                kv_bits=3.5,
+                kv_quant_scheme="turboquant",
+                verbose=False
+            )
+            chunk_summaries.append(self.get_answer_from_output(output))
+
+        print("\n--> Consolidating final summary...")
+        consolidated_text = "\n\n".join(chunk_summaries)
+    
+        base_instruction = "Please combine them into a single coherent, detailed summary"
+        final_instruction = f"{base_instruction}. {extra_instructions}" if extra_instructions else base_instruction
+    
+        final_prompt = apply_chat_template(
+            self.processor, self.config,
+            [{"role": "user", "content": f"The following are summaries of segments from '{filepath}'. {final_instruction}:\n\n{consolidated_text}"}],
+            num_images=0
+        )
+    
+        return generate(
+            self.model, self.processor, final_prompt, [],
+            max_tokens=1500,
+            temp=0.2,
+            repetition_penalty=1.1,
+            kv_bits=3.5,
+            kv_quant_scheme="turboquant",
+            verbose=False
+        )
+
+    def generate_summaries(self, markdown_path: str, summaries_path: str) -> None:
+        for root, dirs, files in os.walk(markdown_path):
+            for file in files:
+                if file.endswith(".md"):
+                    source_file = os.path.join(root, file)
+                    target_path = os.path.join(summaries_path, root[len(markdown_path)+1:])
+                    if not os.path.exists(target_path):
+                        os.makedirs(target_path)
+                    target_file = os.path.join(target_path, file)
+                    if os.path.exists(target_file):
+                        self.log.info(f"Summary already exists: {target_file}")
+                        continue
+                    with open(source_file, 'r') as f:
+                        content = f.read()
+                    metadata, md_text = MarkdownConverter.parse_markdown(content)
+                    if metadata is None:
+                        print(f"No metadata found for {source_file}")
+                        continue
+                    print(f"Summarizing {source_file}...")
+                    summary = self.chunked_summarize(content, source_file)
+                    sum_metadata = {}
+                    if 'title' in metadata:
+                        sum_metadata['title'] = metadata['title']
+                    if 'authors' in metadata:
+                        sum_metadata['authors'] = metadata['authors']
+                    if 'tags' in metadata:
+                        sum_metadata['tags'] = metadata['tags']
+                    if 'uuid' in metadata:
+                        sum_metadata['uuid'] = metadata['uuid']
+                    else:
+                        print(f"No uuid found for {source_file}")
+                    full_summary = MarkdownConverter.assemble_markdown(sum_metadata, summary)
+                    atomic_write(target_file, full_summary)
+                    self.log.info(f"Successfully summarized '{source_file}' to '{target_file}'")
+
+                    # Manually clear large objects
+                    del content
+                    del summary
+                    del full_summary
+                    clear_memory()
+
+
+def get_config():
     config_file = os.path.expanduser("~/.config/summarizer/converter_config.json")
     config = None
     try:
@@ -398,16 +562,40 @@ def calibre_main():
         config = {
             "calibre_path": os.path.expanduser("~/ReferenceLibrary/Calibre Library"),
             "markdown_path": os.path.expanduser("~/ReferenceLibrary/MarkdownLibrary"),
-            "target_series": ["anthropology", "music", "history"]
+            "target_series": ["anthropology", "music", "history"],
+            "summaries_path": os.path.expanduser("~/ReferenceLibrary/Summaries")
         }
         os.makedirs(os.path.dirname(config_file), exist_ok=True)
         atomic_write(config_file, json.dumps(config, indent=4))
-    calibre_path = config['calibre_path']
-    markdown_path = config['markdown_path']
-    target_series = config['target_series']
-    converter = CalibreConverter(calibre_path, markdown_path)
-    converter.mirror_library(target_series)
+    if "summaries_path" not in config:
+        config["summaries_path"] = os.path.expanduser("~/ReferenceLibrary/Summaries")
+        atomic_write(config_file, json.dumps(config, indent=4))
+    if "chunk_size" not in config:
+        config["chunk_size"] = 250000
+        atomic_write(config_file, json.dumps(config, indent=4))
+    return config
+
+def calibre_main(config):
+    converter = CalibreConverter(config['calibre_path'], config['markdown_path'])
+    converter.mirror_library(config['target_series'])
+
+def sum_main(config):
+    converter = Summarizer(chunk_size=config['chunk_size'])
+    converter.generate_summaries(config['markdown_path'], config['summaries_path'])
+    return
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    calibre_main()
+    config = get_config()
+    if MLX_AVAILABLE is False:
+        # t1 = threading.Thread(target=calibre_main, args=(config,))
+        # t1.start()
+        calibre_main(config)
+    else:
+        t1 = None
+    if MLX_AVAILABLE:
+        # t2 = threading.Thread(target=sum_main, args=(config,))
+        # t2.start()
+        sum_main(config)
+    # if t1 is not None:
+        # t1.join()

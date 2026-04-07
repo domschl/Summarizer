@@ -10,93 +10,13 @@ except ImportError:
     def generate(*args, **kwargs): raise ImportError("MLX is not available on this platform.")
     def apply_chat_template(*args, **kwargs): raise ImportError("MLX is not available on this platform.")
     def load_config(*args, **kwargs): raise ImportError("MLX is not available on this platform.")
-import math
 import shlex
 import logging
 import json
 import os
 import hashlib
 
-from sum_converter import MarkdownConverter
-
-
-class Summarizer:
-    def __init__(self, model=None, processor=None, config: dict[str, object] | None = None, chunk_size: int = 50000) -> None:
-        self.log: logging.Logger = logging.getLogger("Summarizer")
-        if model is None or processor is None or config is None:
-            model_id = "mlx-community/gemma-4-26b-a4b-it-4bit"
-            self.model, self.processor = load(model_id)
-            self.config = load_config(model_id)
-        else:
-            self.model = model
-            self.processor = processor
-            self.config = config
-        self.chunk_size: int = chunk_size
-
-    def get_answer_from_output(self, output: object) -> str:
-        """Utility to strip thinking tokens and return the final answer."""
-        if hasattr(output, "text"):
-            text = str(getattr(output, "text"))
-        else:
-            text = str(output)
-        if "<channel|>" in text:
-            return text.split("<channel|>")[-1].strip()
-        return text
-
-    def chunked_summarize(self, content: str, filepath: str, extra_instructions: str = "") -> object:
-        """Map-Reduce strategy for large files to avoid VRAM overflow."""
-        # 50,000 chars is roughly 12k tokens - safe for 26B model on most Macs
-        chunk_size = 250000 
-        num_chunks = math.ceil(len(content) / chunk_size)
-        
-        chunk_summaries = []
-        for i in range(num_chunks):
-            start = i * chunk_size
-            end = start + chunk_size
-            chunk = content[start:end]
-        
-            print(f"--> Summarizing chunk {i+1}/{num_chunks}...", flush=True)
-            
-            instruction = f"Briefly summarize this part of the document. {extra_instructions}" if extra_instructions else "Briefly summarize this part of the document:"
-            prompt = apply_chat_template(
-                self.processor, self.config,
-                [{"role": "user", "content": f"{instruction}\n\n{chunk}"}],
-                num_images=0
-            )
-            
-            # Generate with lower max_tokens for speed during mapping
-            output = generate(
-                self.model, self.processor, prompt, [],
-                max_tokens=400,
-                temp=0.2,
-                repetition_penalty=1.1,
-                kv_bits=3.5,
-                kv_quant_scheme="turboquant",
-                verbose=False
-            )
-            chunk_summaries.append(self.get_answer_from_output(output))
-
-        print("\n--> Consolidating final summary...")
-        consolidated_text = "\n\n".join(chunk_summaries)
-    
-        base_instruction = "Please combine them into a single coherent, detailed summary"
-        final_instruction = f"{base_instruction}. {extra_instructions}" if extra_instructions else base_instruction
-    
-        final_prompt = apply_chat_template(
-            self.processor, self.config,
-            [{"role": "user", "content": f"The following are summaries of segments from '{filepath}'. {final_instruction}:\n\n{consolidated_text}"}],
-            num_images=0
-        )
-    
-        return generate(
-            self.model, self.processor, final_prompt, [],
-            max_tokens=1500,
-            temp=0.2,
-            repetition_penalty=1.1,
-            kv_bits=3.5,
-            kv_quant_scheme="turboquant",
-            verbose=False
-        )
+from sum_converter import MarkdownConverter, Summarizer
 
                         
 class ArtifactCache:
@@ -171,7 +91,7 @@ class ChatAgent:
         self.temperature: float = temperature
         self.repetition_penalty: float = repetition_penalty
         
-        self.summarizer = Summarizer(self.model, self.processor, self.config, self.chunk_size)
+        self.summarizer = Summarizer(self.model, self.processor, self.config, chunk_size=self.chunk_size)
         self.converter = MarkdownConverter()
         self.cache = ArtifactCache()
 
