@@ -7,10 +7,33 @@ import xml.etree.ElementTree as ET
 import base64
 import io
 import yaml
+import tempfile
 from typing import Any
 from PIL import Image
 
 from docling.document_converter import DocumentConverter
+
+
+def atomic_write(filepath: str, content: str | bytes, encoding: str = "utf-8"):
+    """Write content to a file atomically by using a temporary file and renaming it."""
+    target_dir = os.path.dirname(filepath)
+    if target_dir and not os.path.exists(target_dir):
+        os.makedirs(target_dir, exist_ok=True)
+    
+    # Use the same directory for the temp file to ensure it's on the same filesystem
+    # for an atomic rename.
+    fd, temp_path = tempfile.mkstemp(dir=target_dir, prefix=".tmp_" + os.path.basename(filepath))
+    try:
+        mode = 'w' if isinstance(content, str) else 'wb'
+        with os.fdopen(fd, mode, encoding=encoding if isinstance(content, str) else None) as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, filepath)
+    except Exception:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        raise
 
 
 class MarkdownConverter:
@@ -348,8 +371,7 @@ class CalibreConverter:
                             # Add metadata:
                             metadata = self.parse_calibre_metadata(opf_path, None, create_icon=True)
                             md_text = self.assemble_markdown(metadata, md_text)
-                            with open(target_file, 'w') as f:
-                                _ = f.write(md_text)
+                            atomic_write(target_file, md_text)
                             self.log.info(f"Successfully added metadata to '{target_file}'")
                             continue
                         continue
@@ -360,8 +382,7 @@ class CalibreConverter:
                         continue
                     metadata = self.parse_calibre_metadata(opf_path, None, create_icon=True)
                     markdown = self.assemble_markdown(metadata, markdown)
-                    with open(target_file, 'w') as f:
-                        _ = f.write(markdown)
+                    atomic_write(target_file, markdown)
                     self.log.info(f"Successfully converted '{source_file}' to markdown: {target_file}")
 
 
@@ -380,8 +401,7 @@ def calibre_main():
             "target_series": ["anthropology", "music", "history"]
         }
         os.makedirs(os.path.dirname(config_file), exist_ok=True)
-        with open(config_file, 'w') as f:
-            json.dump(config, f, indent=4)
+        atomic_write(config_file, json.dumps(config, indent=4))
     calibre_path = config['calibre_path']
     markdown_path = config['markdown_path']
     target_series = config['target_series']
