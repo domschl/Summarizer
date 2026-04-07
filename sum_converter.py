@@ -241,7 +241,7 @@ class CalibreConverter:
             # Process cover image
             if existing_metadata and existing_metadata['icon']:
                 image_str = existing_metadata['icon']            
-            if not image_str
+            if not image_str:
                 cover_path = os.path.join(os.path.dirname(filename), "cover.jpg")
                 image_str = self.encode_image(cover_path)
 
