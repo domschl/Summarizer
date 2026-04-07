@@ -7,9 +7,8 @@ import logging
 import json
 import os
 import hashlib
-import subprocess
 
-from docling.document_converter import DocumentConverter
+from sum_converter import MarkdownConverter
 
 
 class Summarizer:
@@ -90,46 +89,7 @@ class Summarizer:
             verbose=False
         )
 
-class MarkdownConverter:
-    def __init__(self) -> None:
-        self.log: logging.Logger = logging.getLogger("MarkdownConverter")
-        self.converter: DocumentConverter = DocumentConverter()
-
-    def convert(self, filepath: str) -> str | None:
-        if not os.path.exists(filepath):
-            self.log.error(f"File not found: {filepath}")
-            return None
-        docling_exts = ('.pdf', '.docx', '.pptx', '.xlsx', '.html')
-        pandoc_exts = ('.epub',)
-        text_exts = ('.txt', '.md', '.markdown', '.py', '.js', '.java', 
-                     '.c', '.cpp', '.h', '.hpp', '.rb', '.php', '.html', 
-                     '.css', '.json', '.xml', '.yml', '.yaml', '.toml', 
-                     '.sh', '.bash', '.zsh', '.fish', '.ps1', '.bat', '.cmd')
-        ext = filepath.lower()
-        if ext.endswith(docling_exts):
-            self.log.info(f"Converting '{filepath}' to markdown using Docling (this may take a moment)...")
-            result = self.converter.convert(filepath)
-            return result.document.export_to_markdown()
-        elif ext.endswith(pandoc_exts):
-            self.log.info(f"Converting '{filepath}' to markdown using Pandoc...")
-            try:
-                # Using commonmark for a clean, structural markdown output
-                result = subprocess.run(
-                    ['pandoc', filepath, '-t', 'commonmark'],
-                    capture_output=True, text=True, check=True
-                )
-                return result.stdout
-            except Exception as e:
-                self.log.error(f"Pandoc conversion failed: {e}")
-                return None
-        elif ext.endswith(text_exts):
-            self.log.info(f"Reading '{filepath}' as plain text...")
-            with open(filepath, "r", encoding="utf-8") as f:
-                return f.read()
-        else:
-            self.log.error(f"Unsupported file type: {filepath}")
-            return None
-
+                        
 class ArtifactCache:
     def __init__(self, cache_file: str | None = None) -> None:
         self.cache: dict[str, dict[str, str]] = {}
@@ -304,7 +264,7 @@ class ChatAgent:
         print("\nChat ended.")
 
 
-if __name__ == "__main__":
+def agent_main():
     config_file = os.path.expanduser("~/.config/summarizer/config.json")
     if os.path.exists(config_file):
         with open(config_file, "r") as f:
@@ -325,3 +285,8 @@ if __name__ == "__main__":
         ca.run()
     except KeyboardInterrupt:
         print("\nChat ended.")
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    agent_main()
