@@ -528,6 +528,7 @@ class Summarizer:
                         continue
                     print(f"Summarizing {source_file}...")
                     summary = self.chunked_summarize(content, source_file)
+                    summary_text = self.get_answer_from_output(summary)
                     sum_metadata = {}
                     if 'title' in metadata:
                         sum_metadata['title'] = metadata['title']
@@ -539,7 +540,7 @@ class Summarizer:
                         sum_metadata['uuid'] = metadata['uuid']
                     else:
                         print(f"No uuid found for {source_file}")
-                    full_summary = MarkdownConverter.assemble_markdown(sum_metadata, summary)
+                    full_summary = MarkdownConverter.assemble_markdown(sum_metadata, summary_text)
                     atomic_write(target_file, full_summary)
                     self.log.info(f"Successfully summarized '{source_file}' to '{target_file}'")
 
@@ -547,6 +548,7 @@ class Summarizer:
                     del content
                     del summary
                     del full_summary
+                    del summary_text
                     clear_memory()
 
 
