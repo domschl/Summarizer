@@ -1,6 +1,15 @@
-from mlx_vlm import load, generate
-from mlx_vlm.prompt_utils import apply_chat_template
-from mlx_vlm.utils import load_config
+try:
+    from mlx_vlm import load, generate
+    from mlx_vlm.prompt_utils import apply_chat_template
+    from mlx_vlm.utils import load_config
+    MLX_AVAILABLE = True
+except ImportError:
+    MLX_AVAILABLE = False
+    # Mocking for type checking or non-running environments
+    def load(*args, **kwargs): raise ImportError("MLX is not available on this platform.")
+    def generate(*args, **kwargs): raise ImportError("MLX is not available on this platform.")
+    def apply_chat_template(*args, **kwargs): raise ImportError("MLX is not available on this platform.")
+    def load_config(*args, **kwargs): raise ImportError("MLX is not available on this platform.")
 import math
 import shlex
 import logging
