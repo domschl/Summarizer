@@ -118,7 +118,7 @@ def calibre_main():
     calibre_path = os.path.expanduser("~/ReferenceLibrary/Calibre Library")
     markdown_path = os.path.expanduser("~/ReferenceLibrary/MarkdownLibrary")
     converter = CalibreConverter(calibre_path, markdown_path)
-    converter.mirror_library(['anthropology', 'music'])
+    converter.mirror_library(['anthropology', 'music', 'history'])
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
