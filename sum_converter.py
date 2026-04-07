@@ -16,12 +16,13 @@ from PIL import Image
 
 try:
     import torch
-    if torch.backends.mps.is_available():
-        HAS_MPS = True
-    else:
-        HAS_MPS = False
+    HAS_TORCH = True
+    HAS_MPS = torch.backends.mps.is_available()
+    HAS_CUDA = torch.cuda.is_available()
 except ImportError:
+    HAS_TORCH = False
     HAS_MPS = False
+    HAS_CUDA = False
 
 try:
     from mlx_vlm import load, generate
@@ -42,12 +43,19 @@ from docling.document_converter import DocumentConverter
 def clear_memory():
     """Force garbage collection and clear GPU/MPS caches if possible."""
     gc.collect()
-    if HAS_MPS:
-        try:
-            torch.mps.empty_cache()
-        except Exception:
-            pass
-    # If CUDA was used, we would add torch.cuda.empty_cache() here
+    if HAS_TORCH:
+        if HAS_MPS:
+            try:
+                torch.mps.empty_cache()
+            except Exception:
+                pass
+        if HAS_CUDA:
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+    # Tip: Set environment variable PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True 
+    # on Linux to further reduce fragmentation.
 
 
 def atomic_write(filepath: str, content: str | bytes, encoding: str = "utf-8"):
@@ -91,7 +99,16 @@ class MarkdownConverter:
         if ext.endswith(docling_exts):
             self.log.info(f"Converting '{filepath}' to markdown using Docling (this may take a moment)...")
             result = self.converter.convert(filepath)
-            return result.document.export_to_markdown()
+            markdown_content = result.document.export_to_markdown()
+            
+            # Crucial: Unload backend to prevent memory growth in persistent converter objects
+            try:
+                if hasattr(result, "input") and hasattr(result.input, "_backend") and result.input._backend:
+                    result.input._backend.unload()
+            except Exception as e:
+                self.log.debug(f"Non-critical: Failed to unload docling backend: {e}")
+            
+            return markdown_content
         elif ext.endswith(pandoc_exts):
             self.log.info(f"Converting '{filepath}' to markdown using Pandoc...")
             try:
