@@ -420,7 +420,7 @@ class CalibreConverter:
                         self.log.error(f"Failed to convert '{source_file}' to markdown")
                         continue
                     metadata = self.parse_calibre_metadata(opf_path, None, create_icon=True)
-                    markdown = self.assemble_markdown(metadata, markdown)
+                    markdown = MarkdownConverter.assemble_markdown(metadata, markdown)
                     atomic_write(target_file, markdown)
                     self.log.info(f"Successfully converted '{source_file}' to markdown: {target_file}")
                     
@@ -571,7 +571,7 @@ def get_config():
         config["summaries_path"] = os.path.expanduser("~/ReferenceLibrary/Summaries")
         atomic_write(config_file, json.dumps(config, indent=4))
     if "chunk_size" not in config:
-        config["chunk_size"] = 250000
+        config["chunk_size"] = 50000
         atomic_write(config_file, json.dumps(config, indent=4))
     return config
 
