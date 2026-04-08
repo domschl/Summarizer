@@ -511,8 +511,8 @@ class LlamaCppEngine:
         # With 32k context, we need ~12 layers offloaded to fit KV cache.
         self.llm = Llama(
             model_path=model_path,
-            n_gpu_layers=14,  # Further reduced to fit KV cache
-            n_ctx=16384,      # Large context for summarization
+            n_gpu_layers=12,  # Further reduced to fit KV cache
+            n_ctx=32768,      # Large context for summarization
             flash_attn=True,  # Significant memory savings for long context
             verbose=False     # Disabled to reduce noise; set to True to debug VRAM/loading
         )
