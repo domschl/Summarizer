@@ -1,4 +1,5 @@
 import logging
+import hashlib
 import os
 import subprocess
 import json
@@ -393,10 +394,16 @@ class CalibreConverter:
         
         return metadata
 
-    def mirror_library(self, target_series: list[str] | None = None):
+    def mirror_library(self, target_series: list[str] | None = None, worker_id: int = 0, total_workers: int = 1):
         # walk calibre library path and look for 'metadata.opf':
         for root, _dirs, files in os.walk(self.calibre_path):
             if 'metadata.opf' in files:
+                # Deterministic Partitioning: hash the relative path
+                rel_root = os.path.relpath(root, self.calibre_path)
+                path_hash = int(hashlib.md5(rel_root.encode()).hexdigest(), 16)
+                if path_hash % total_workers != worker_id:
+                    continue
+
                 opf_path = os.path.join(root, 'metadata.opf')
                 metadata = self.parse_calibre_metadata(opf_path, None, create_icon=False)
                 if metadata is None:
@@ -606,11 +613,17 @@ class Summarizer:
         )
         return output
 
-    def generate_summaries(self, markdown_path: str, summaries_path: str) -> None:
+    def generate_summaries(self, markdown_path: str, summaries_path: str, worker_id: int = 0, total_workers: int = 1) -> None:
         for root, dirs, files in os.walk(markdown_path):
             for file in files:
                 if file.endswith(".md"):
                     source_file = os.path.join(root, file)
+
+                    # Deterministic Partitioning: hash the relative file path
+                    rel_file = os.path.relpath(source_file, markdown_path)
+                    file_hash = int(hashlib.md5(rel_file.encode()).hexdigest(), 16)
+                    if file_hash % total_workers != worker_id:
+                        continue
                     target_path = os.path.join(summaries_path, root[len(markdown_path)+1:])
                     if not os.path.exists(target_path):
                         os.makedirs(target_path)
@@ -675,13 +688,13 @@ def get_config():
         atomic_write(config_file, json.dumps(config, indent=4))
     return config
 
-def calibre_main(config):
+def calibre_main(config, worker_id: int = 0, total_workers: int = 1):
     converter = CalibreConverter(config['calibre_path'], config['markdown_path'])
-    converter.mirror_library(config['target_series'])
+    converter.mirror_library(config['target_series'], worker_id, total_workers)
 
-def sum_main(config):
+def sum_main(config, worker_id: int = 0, total_workers: int = 1):
     converter = Summarizer(chunk_size=config['chunk_size'])
-    converter.generate_summaries(config['markdown_path'], config['summaries_path'])
+    converter.generate_summaries(config['markdown_path'], config['summaries_path'], worker_id, total_workers)
     return
 
 if __name__ == "__main__":
@@ -690,6 +703,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Summarizer: Document conversion and summary generation.")
     parser.add_argument("-c", "--calibre", action="store_true", help="Mirror Calibre library and convert to markdown")
     parser.add_argument("-s", "--summarize", action="store_true", help="Generate summaries for markdown documents")
+    parser.add_argument("--worker-id", type=int, default=0, help="Worker ID for deterministic partitioning (0 to total-workers - 1)")
+    parser.add_argument("--total-workers", type=int, default=1, help="Total number of workers for deterministic partitioning")
     
     args = parser.parse_args()
     config = get_config()
@@ -697,8 +712,11 @@ if __name__ == "__main__":
     if not args.calibre and not args.summarize:
         parser.print_help()
     else:
+        if args.calibre and args.summarize:
+            print("Please chose one option: -c or -s.")
+            exit(1)
         if args.calibre:
-            calibre_main(config)
+            calibre_main(config, args.worker_id, args.total_workers)
         
         if args.summarize:
-            sum_main(config)
+            sum_main(config, args.worker_id, args.total_workers)
