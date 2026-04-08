@@ -1,22 +1,11 @@
-try:
-    from mlx_vlm import load, generate
-    from mlx_vlm.prompt_utils import apply_chat_template
-    from mlx_vlm.utils import load_config
-    MLX_AVAILABLE = True
-except ImportError:
-    MLX_AVAILABLE = False
-    # Mocking for type checking or non-running environments
-    def load(*args, **kwargs): raise ImportError("MLX is not available on this platform.")
-    def generate(*args, **kwargs): raise ImportError("MLX is not available on this platform.")
-    def apply_chat_template(*args, **kwargs): raise ImportError("MLX is not available on this platform.")
-    def load_config(*args, **kwargs): raise ImportError("MLX is not available on this platform.")
 import shlex
 import logging
 import json
 import os
 import hashlib
+import platform
 
-from sum_converter import MarkdownConverter, Summarizer
+from sum_converter import MarkdownConverter, Summarizer, MLXEngine, LlamaCppEngine, MLX_AVAILABLE, LLAMA_CPP_AVAILABLE
 
                         
 class ArtifactCache:
@@ -82,20 +71,25 @@ class ChatAgent:
             {"role": "system", "content": "<|think|> You are a helpful AI assistant that thinks step-by-step before answering."}
         ]
 
-        # Load model and processor
-        model_id = "mlx-community/gemma-4-26b-a4b-it-4bit"
-        self.model, self.processor = load(model_id)
-        self.config = load_config(model_id)
+        # Select engine based on platform
+        if platform.system() == "Darwin" and platform.machine() == "arm64" and MLX_AVAILABLE:
+            self.engine = MLXEngine()
+            backend_name = "MLX (Apple Silicon optimized)"
+        elif LLAMA_CPP_AVAILABLE:
+            self.engine = LlamaCppEngine()
+            backend_name = "LlamaCpp (CUDA/CPU cross-platform)"
+        else:
+            raise RuntimeError("No suitable inference engine found.")
 
         self.chunk_size: int = chunk_size
         self.temperature: float = temperature
         self.repetition_penalty: float = repetition_penalty
         
-        self.summarizer = Summarizer(self.model, self.processor, self.config, chunk_size=self.chunk_size)
+        self.summarizer = Summarizer(engine=self.engine, chunk_size=self.chunk_size)
         self.converter = MarkdownConverter()
         self.cache = ArtifactCache()
 
-        print("Gemma 4 Chat Agent initialized (Thinking Mode & TurboQuant enabled).")
+        print(f"Gemma 4 Chat Agent initialized using {backend_name}.")
         print("Type 'exit' or 'quit' to end the conversation.\n")
 
     def get_response(self, user_input: str) -> dict[str, str]:
@@ -142,23 +136,15 @@ class ChatAgent:
             
             # Single shared generation point
             self.chat_history.append({"role": "user", "content": msg})
-            formatted_prompt = apply_chat_template(self.processor, self.config, self.chat_history, num_images=0)
+            formatted_prompt = self.engine.format_prompt(self.chat_history)
             
-            output = generate(
-                self.model, self.processor, formatted_prompt, [], 
+            full_response = self.engine.generate(
+                formatted_prompt,
                 max_tokens=2000, 
                 temp=self.temperature,
-                repetition_penalty=self.repetition_penalty,
-                kv_bits=3.5, 
-                kv_quant_scheme="turboquant", 
-                verbose=False
+                repetition_penalty=self.repetition_penalty
             )
             self.cache.save()
-                
-            if hasattr(output, "text"):
-                full_response = str(getattr(output, "text"))
-            else:
-                full_response = str(output)
             
             if "<channel|>" in full_response:
                 parts = full_response.split("<channel|>")

@@ -4,6 +4,8 @@ import subprocess
 import json
 from datetime import datetime, timezone
 import xml.etree.ElementTree as ET
+import time
+import sys
 import base64
 import io
 import math
@@ -11,8 +13,10 @@ import yaml
 import tempfile
 import threading
 import gc
-from typing import Any
+import argparse
+from typing import Any, Protocol, runtime_checkable
 from PIL import Image
+from huggingface_hub import hf_hub_download
 
 try:
     import torch
@@ -31,11 +35,12 @@ try:
     MLX_AVAILABLE = True
 except ImportError:
     MLX_AVAILABLE = False
-    # Mocking for type checking or non-running environments
-    def load(*args, **kwargs): raise ImportError("MLX is not available on this platform.")
-    def generate(*args, **kwargs): raise ImportError("MLX is not available on this platform.")
-    def apply_chat_template(*args, **kwargs): raise ImportError("MLX is not available on this platform.")
-    def load_config(*args, **kwargs): raise ImportError("MLX is not available on this platform.")
+
+try:
+    from llama_cpp import Llama
+    LLAMA_CPP_AVAILABLE = True
+except ImportError:
+    LLAMA_CPP_AVAILABLE = False
 
 from docling.document_converter import DocumentConverter
 
@@ -447,32 +452,116 @@ class CalibreConverter:
                     clear_memory()
 
 
-class Summarizer:
-    def __init__(self, model=None, processor=None, config: dict[str, object] | None = None, chunk_size: int = 50000) -> None:
-        self.log: logging.Logger = logging.getLogger("Summarizer")
-        if model is None or processor is None or config is None:
-            model_id = "mlx-community/gemma-4-26b-a4b-it-4bit"
-            self.model, self.processor = load(model_id)
-            self.config = load_config(model_id)
-        else:
-            self.model = model
-            self.processor = processor
-            self.config = config
-        self.chunk_size: int = chunk_size
+@runtime_checkable
+class InferenceEngine(Protocol):
+    """Protocol for cross-platform inference engines."""
+    def generate(self, prompt: str, max_tokens: int = 1500, temp: float = 0.2, repetition_penalty: float = 1.1) -> str: ...
+    def format_prompt(self, messages: list[dict[str, str]]) -> str: ...
+    def get_token_count(self, text: str) -> int: ...
 
-    def get_answer_from_output(self, output: object) -> str:
-        """Utility to strip thinking tokens and return the final answer."""
+
+class MLXEngine:
+    def __init__(self, model_id: str = "mlx-community/gemma-4-26b-a4b-it-4bit"):
+        if not MLX_AVAILABLE:
+            raise ImportError("MLX is not available on this platform.")
+        self.model, self.processor = load(model_id)
+        self.config = load_config(model_id)
+
+    def format_prompt(self, messages: list[dict[str, str]]) -> str:
+        return apply_chat_template(self.processor, self.config, messages, num_images=0)
+
+    def generate(self, prompt: str, max_tokens: int = 1500, temp: float = 0.2, repetition_penalty: float = 1.1) -> str:
+        output = generate(
+            self.model, self.processor, prompt, [],
+            max_tokens=max_tokens,
+            temp=temp,
+            repetition_penalty=repetition_penalty,
+            kv_bits=3.5,
+            kv_quant_scheme="turboquant",
+            verbose=False
+        )
         if hasattr(output, "text"):
             text = str(getattr(output, "text"))
         else:
             text = str(output)
+        return text
+
+    def get_token_count(self, text: str) -> int:
+        # Simple heuristic or use processor.tokenizer
+        return len(self.processor.tokenizer.encode(text))
+
+
+class LlamaCppEngine:
+    def __init__(self, repo_id: str = "unsloth/gemma-4-26B-A4B-it-GGUF", filename: str = "gemma-4-26B-A4B-it-UD-Q4_K_XL.gguf"):
+        if not LLAMA_CPP_AVAILABLE:
+            raise ImportError("llama-cpp-python is not installed.")
+        
+        print(f"Loading LlamaCpp model from {repo_id}...")
+        model_path = hf_hub_download(repo_id=repo_id, filename=filename)
+        
+        # 11GB VRAM for 17GB model -> ~60% layers offloaded
+        # 11GB VRAM for 17GB model -> ~60% layers offloaded
+        # With 32k context, we need ~12 layers offloaded to fit KV cache.
+        self.llm = Llama(
+            model_path=model_path,
+            n_gpu_layers=14,  # Further reduced to fit KV cache
+            n_ctx=16384,      # Large context for summarization
+            flash_attn=True,  # Significant memory savings for long context
+            verbose=False     # Disabled to reduce noise; set to True to debug VRAM/loading
+        )
+
+    def format_prompt(self, messages: list[dict[str, str]]) -> str:
+        # Gemma IT format: <start_of_turn>user\n...<end_of_turn>\n<start_of_turn>model\n
+        formatted = ""
+        for msg in messages:
+            role = msg["role"]
+            content = msg["content"]
+            formatted += f"<start_of_turn>{role}\n{content}<end_of_turn>\n"
+        formatted += "<start_of_turn>model\n"
+        return formatted
+
+    def generate(self, prompt: str, max_tokens: int = 1500, temp: float = 0.2, repetition_penalty: float = 1.1) -> str:
+        # llama-cpp-python's create_completion handles strings or 
+        # create_chat_completion handles message lists. 
+        # But we already formatted it.
+        output = self.llm(
+            prompt,
+            max_tokens=max_tokens,
+            # cache_prompt=True,
+            temperature=temp,
+            repeat_penalty=repetition_penalty,
+            stop=["<end_of_turn>"]
+        )
+        return output["choices"][0]["text"].strip()
+
+    def get_token_count(self, text: str) -> int:
+        return len(self.llm.tokenize(text.encode("utf-8")))
+
+
+class Summarizer:
+    def __init__(self, engine: InferenceEngine | None = None, chunk_size: int = 50000) -> None:
+        self.log: logging.Logger = logging.getLogger("Summarizer")
+        if engine is None:
+            # Auto-detect or default
+            import platform
+            if platform.system() == "Darwin" and platform.machine() == "arm64" and MLX_AVAILABLE:
+                self.engine = MLXEngine()
+            elif LLAMA_CPP_AVAILABLE:
+                self.engine = LlamaCppEngine()
+            else:
+                raise RuntimeError("No suitable inference engine found.")
+        else:
+            self.engine = engine
+        self.chunk_size: int = chunk_size
+
+    def get_answer_from_output(self, text: str) -> str:
+        """Utility to strip thinking tokens and return the final answer."""
         if "<channel|>" in text:
             return text.split("<channel|>")[-1].strip()
         return text
 
-    def chunked_summarize(self, content: str, filepath: str, extra_instructions: str = "") -> object:
+    def chunked_summarize(self, content: str, filepath: str, extra_instructions: str = "") -> str:
         """Map-Reduce strategy for large files to avoid VRAM overflow."""
-        # 50,000 chars is roughly 12k tokens - safe for 26B model on most Macs
         chunk_size = self.chunk_size 
         num_chunks = math.ceil(len(content) / chunk_size)
         
@@ -481,26 +570,22 @@ class Summarizer:
             start = i * chunk_size
             end = start + chunk_size
             chunk = content[start:end]
-        
-            print(f"--> Summarizing chunk {i+1}/{num_chunks}...", flush=True)
+
+            chunk_start = time.time()
+            progress_msg = f"--> Summarizing chunk {i+1}/{num_chunks}..."
+            print(f"\r{progress_msg}", end="", flush=True)
             
             instruction = f"Briefly summarize this part of the document. {extra_instructions}" if extra_instructions else "Briefly summarize this part of the document:"
-            prompt = apply_chat_template(
-                self.processor, self.config,
-                [{"role": "user", "content": f"{instruction}\n\n{chunk}"}],
-                num_images=0
-            )
+            prompt = self.engine.format_prompt([{"role": "user", "content": f"{instruction}\n\n{chunk}"}])
             
-            # Generate with lower max_tokens for speed during mapping
-            output = generate(
-                self.model, self.processor, prompt, [],
+            output = self.engine.generate(
+                prompt,
                 max_tokens=400,
                 temp=0.2,
-                repetition_penalty=1.1,
-                kv_bits=3.5,
-                kv_quant_scheme="turboquant",
-                verbose=False
+                repetition_penalty=1.1
             )
+            duration = time.time() - chunk_start
+            print(f" ({duration:.1f}s)", end="", flush=True)
             chunk_summaries.append(self.get_answer_from_output(output))
 
         print("\n--> Consolidating final summary...")
@@ -509,21 +594,17 @@ class Summarizer:
         base_instruction = "Please combine them into a single coherent, detailed summary"
         final_instruction = f"{base_instruction}. {extra_instructions}" if extra_instructions else base_instruction
     
-        final_prompt = apply_chat_template(
-            self.processor, self.config,
-            [{"role": "user", "content": f"The following are summaries of segments from '{filepath}'. {final_instruction}:\n\n{consolidated_text}"}],
-            num_images=0
+        final_prompt = self.engine.format_prompt(
+            [{"role": "user", "content": f"The following are summaries of segments from '{filepath}'. {final_instruction}:\n\n{consolidated_text}"}]
         )
     
-        return generate(
-            self.model, self.processor, final_prompt, [],
+        output = self.engine.generate(
+            final_prompt,
             max_tokens=1500,
             temp=0.2,
-            repetition_penalty=1.1,
-            kv_bits=3.5,
-            kv_quant_scheme="turboquant",
-            verbose=False
+            repetition_penalty=1.1
         )
+        return output
 
     def generate_summaries(self, markdown_path: str, summaries_path: str) -> None:
         for root, dirs, files in os.walk(markdown_path):
@@ -605,16 +686,19 @@ def sum_main(config):
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
+    
+    parser = argparse.ArgumentParser(description="Summarizer: Document conversion and summary generation.")
+    parser.add_argument("-c", "--calibre", action="store_true", help="Mirror Calibre library and convert to markdown")
+    parser.add_argument("-s", "--summarize", action="store_true", help="Generate summaries for markdown documents")
+    
+    args = parser.parse_args()
     config = get_config()
-    if MLX_AVAILABLE is False:
-        # t1 = threading.Thread(target=calibre_main, args=(config,))
-        # t1.start()
-        calibre_main(config)
+
+    if not args.calibre and not args.summarize:
+        parser.print_help()
     else:
-        t1 = None
-    if MLX_AVAILABLE:
-        # t2 = threading.Thread(target=sum_main, args=(config,))
-        # t2.start()
-        sum_main(config)
-    # if t1 is not None:
-        # t1.join()
+        if args.calibre:
+            calibre_main(config)
+        
+        if args.summarize:
+            sum_main(config)
