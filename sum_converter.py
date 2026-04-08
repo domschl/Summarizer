@@ -410,7 +410,7 @@ class CalibreConverter:
                     self.log.error(f"Could not parse metadata from {opf_path}")
                     continue
                 series = metadata['series'].lower()
-                if target_series is None or series in target_series:
+                if target_series is None or target_series == [] or series in target_series:
                     source_file = None
                     for file in files:
                         ext = os.path.splitext(file)[1]
