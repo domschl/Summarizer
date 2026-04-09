@@ -48,10 +48,20 @@ def get_config():
         config = {
             "calibre_path": os.path.expanduser("~/ReferenceLibrary/Calibre Library"),
             "markdown_path": os.path.expanduser("~/ReferenceLibrary/MarkdownLibrary"),
-            "target_series": ["anthropology", "music", "history"]
+            "target_series": ["anthropology", "music", "history"],
+            "summaries_path": os.path.expanduser("~/ReferenceLibrary/Summaries")
         }
         os.makedirs(os.path.dirname(config_file), exist_ok=True)
         atomic_write(config_file, json.dumps(config, indent=4))
+    
+    # Ensure missing keys are appended safely
+    if "summaries_path" not in config:
+        config["summaries_path"] = os.path.expanduser("~/ReferenceLibrary/Summaries")
+        atomic_write(config_file, json.dumps(config, indent=4))
+    if "chunk_size" not in config:
+        config["chunk_size"] = 50000
+        atomic_write(config_file, json.dumps(config, indent=4))
+
     return config
 
 def encode_image(image_path: str, height: int = 64) -> str:

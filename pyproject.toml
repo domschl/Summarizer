@@ -5,12 +5,9 @@ description = "MLX / Gemma 4 summarizer"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "docling>=2.84.0",
     "fastapi>=0.135.3",
     "python-multipart>=0.0.22",
     "uvicorn>=0.42.0",
-    "mlx-vlm>=0.4.3; sys_platform == 'darwin' and platform_machine == 'arm64'",
-    "torch>=2.4.0; sys_platform != 'darwin'",
-    "llama-cpp-python>=0.3.0; sys_platform == 'linux'",
-    "huggingface-hub>=1.8.0",
+    "pyyaml>=6.0",
+    "pillow>=10.0.0",
 ]
