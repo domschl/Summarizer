@@ -1,0 +1,11 @@
+[project]
+name = "converter-macos"
+version = "0.1.0"
+description = "macOS PDF and EPUB to Markdown converter using Docling and Pandoc"
+requires-python = ">=3.13"
+dependencies = [
+    "docling>=2.84.0",
+]
+
+[project.scripts]
+converter-macos = "converter_macos:main"

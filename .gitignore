@@ -29,6 +29,7 @@ web-interface/backend/requirements.txt
 .env.*.local
 
 # Keep sample data ignored as per original
+test_documents/
 *.txt
 *.pdf
 *.epub

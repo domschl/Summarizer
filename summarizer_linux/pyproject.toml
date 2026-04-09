@@ -1,0 +1,13 @@
+[project]
+name = "summarizer-linux"
+version = "0.1.0"
+description = "Llama.cpp based Gemini 4 summarizer for Linux"
+requires-python = ">=3.13"
+dependencies = [
+    "llama-cpp-python>=0.3.0",
+    "huggingface-hub>=1.8.0",
+    "pyyaml",
+]
+
+[project.scripts]
+summarizer-linux = "summarizer_linux:main"
