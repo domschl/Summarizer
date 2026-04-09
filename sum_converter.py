@@ -15,6 +15,8 @@ import tempfile
 import threading
 import gc
 import argparse
+import multiprocessing
+import hashlib
 from typing import Any, Protocol, runtime_checkable
 from PIL import Image
 from huggingface_hub import hf_hub_download
@@ -44,6 +46,7 @@ except ImportError:
     LLAMA_CPP_AVAILABLE = False
 
 from docling.document_converter import DocumentConverter
+# from docling.datamodel.pipeline_options import PdfPipelineOptions   # doesn't help with memory leaks
 
 
 def clear_memory():
@@ -86,10 +89,127 @@ def atomic_write(filepath: str, content: str | bytes, encoding: str = "utf-8"):
         raise
 
 
+def _run_docling_single_worker(task: dict[str, Any], log_level: int):
+    """
+    Worker function meant to run in an isolated process for exactly ONE file.
+    'task' is a dict: {'source': src, 'target': dst, 'metadata': meta}
+    """
+    # Import inside worker to keep parent process lean
+    from docling.document_converter import DocumentConverter
+    from docling.datamodel.pipeline_options import PdfPipelineOptions, OcrEngine
+    import logging
+    import yaml
+    import os
+    import sys
+    import warnings
+    
+    # Configure logging for the child process
+    logging.basicConfig(
+        level=log_level,
+        format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    logger = logging.getLogger("DoclingWorker")
+    
+    # Silence specific noisy loggers that spam non-fatal errors or progress
+    logging.getLogger("docling.models.stages.ocr.tesseract_ocr_model").setLevel(logging.CRITICAL)
+    logging.getLogger("docling_ibm_models.reading_order.reading_order_rb").setLevel(logging.CRITICAL)
+    logging.getLogger("docling.models.inference_engines.vlm.transformers_engine").setLevel(logging.WARNING)
+    logging.getLogger("docling.models.inference_engines.vlm.auto_inline_engine").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    
+    # Silence transformers warnings
+    warnings.filterwarnings("ignore", message="The tied weights mapping")
+    
+    # Redirect native C-level stderr (Tesseract/Leptonica) to devnull
+    devnull = open(os.devnull, 'w')
+    os.dup2(devnull.fileno(), sys.stderr.fileno())
+
+    try:
+        src = task['source']
+        dst = task['target']
+        meta = task['metadata']
+        
+        logger.info(f"Isolated worker starting conversion: {src}")
+        
+        # Ensure Tesseract can find its language data
+        if "TESSDATA_PREFIX" not in os.environ:
+            os.environ["TESSDATA_PREFIX"] = "/usr/share/tessdata/"
+        
+        # Configure Tesseract as the most stable OCR engine for IBM reading order models
+        from docling.datamodel.base_models import InputFormat
+        from docling.document_converter import PdfFormatOption
+        from docling.datamodel.pipeline_options import PdfPipelineOptions, TesseractOcrOptions
+        
+        pipeline_options = PdfPipelineOptions()
+        # Enable LaTeX math extraction
+        pipeline_options.do_formula_enrichment = True
+        
+        # psm=3: Fully automatic page segmentation, but no OSD (prevents 'OSD failed' spam)
+        pipeline_options.ocr_options = TesseractOcrOptions(lang=["eng", "deu", "fra", "deu_frak"], psm=3)
+        
+        converter = DocumentConverter(
+            format_options={
+                InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
+            }
+        )
+        
+        result = converter.convert(src)
+        markdown = result.document.export_to_markdown()
+        
+        # Filter metadata
+        filtered_metadata: dict[str, Any] = {}
+        for k, v in meta.items():
+            if isinstance(v, list) and len(v) == 0: continue
+            if isinstance(v, str) and v == "": continue
+            filtered_metadata[k] = v
+        
+        header = yaml.dump(filtered_metadata, default_flow_style=False, indent=2)
+        full_content = f"---\n{header}---\n{markdown}"
+        
+        # Atomic write in worker
+        target_dir = os.path.dirname(dst)
+        if not os.path.exists(target_dir):
+            os.makedirs(target_dir, exist_ok=True)
+        
+        temp_dst = dst + ".tmp"
+        with open(temp_dst, "w", encoding="utf-8") as f:
+            f.write(full_content)
+        os.replace(temp_dst, dst)
+        
+        # Cleanup
+        if hasattr(result, "input") and hasattr(result.input, "_backend") and result.input._backend:
+            result.input._backend.unload()
+        del result
+        del markdown
+        del converter
+        import gc
+        gc.collect()
+        logger.info(f"Successfully finished: {src}")
+        
+    except Exception as e:
+        logger.error(f"Worker failure for {task.get('source')}: {e}")
+
+
 class MarkdownConverter:
     def __init__(self) -> None:
         self.log: logging.Logger = logging.getLogger("MarkdownConverter")
-        self.converter: DocumentConverter = DocumentConverter()
+
+    def bulk_convert_isolated(self, tasks: list[dict[str, Any]], concurrency: int = 4):
+        """Spawns a pool of processes to handle docling conversions in parallel."""
+        if not tasks:
+            return
+
+        self.log.info(f"Starting isolated parallel pool (size={concurrency}) for {len(tasks)} files...")
+        
+        # Use 'spawn' to ensure a clean memory slate
+        ctx = multiprocessing.get_context("spawn")
+        # maxtasksperchild=1 ensures the process is killed after every single conversion,
+        # providing absolute memory reclamation for docling leaks.
+        with ctx.Pool(processes=concurrency, maxtasksperchild=1) as pool:
+            pool.starmap(_run_docling_single_worker, [(t, self.log.getEffectiveLevel()) for t in tasks])
+            
+        self.log.info("Parallel batch finished.")
 
     def convert(self, filepath: str) -> str | None:
         if not os.path.exists(filepath):
@@ -394,7 +514,11 @@ class CalibreConverter:
         
         return metadata
 
-    def mirror_library(self, target_series: list[str] | None = None, worker_id: int = 0, total_workers: int = 1):
+    def mirror_library(self, target_series: list[str] | None = None, worker_id: int = 0, total_workers: int = 1, concurrency: int = 4):
+        docling_exts = ('.pdf', '.docx', '.pptx', '.xlsx') # html removed from docling batch for now to keep it simple
+        docling_tasks = []
+        batch_size = 10
+
         # walk calibre library path and look for 'metadata.opf':
         for root, _dirs, files in os.walk(self.calibre_path):
             if 'metadata.opf' in files:
@@ -413,50 +537,61 @@ class CalibreConverter:
                 if target_series is None or target_series == [] or series in target_series:
                     source_file = None
                     for file in files:
-                        ext = os.path.splitext(file)[1]
-                        if ext == '.epub':
+                        ext = os.path.splitext(file)[1].lower()
+                        if ext == '.epub' or ext in docling_exts:
                             source_file = os.path.join(root, file)
                             break
-                    if source_file is None:
-                        for file in files:
-                            ext = os.path.splitext(file)[1]
-                            if ext == '.pdf':
-                                source_file = os.path.join(root, file)
-                                break
+                    
                     if source_file is None:
                         continue
+                    
                     target_path = os.path.join(self.markdown_path, series)
                     if not os.path.exists(target_path):
                         os.makedirs(target_path)
+                    
                     basename = os.path.splitext(os.path.basename(source_file))[0] + '.md'
                     target_file = os.path.join(target_path, basename)
+                    
                     if os.path.exists(target_file):
-                        self.log.info(f"File already exists: {target_file}")
+                        # Re-adding metadata if missing, but otherwise skipping existing
+                        self.log.debug(f"Checking existing file: {target_file}")
                         with open(target_file, 'r') as f:
                             md_text = f.read()
                         yaml_metadata, _content = MarkdownConverter.parse_markdown(md_text)
                         if yaml_metadata is None:
-                            # Add metadata:
                             metadata = self.parse_calibre_metadata(opf_path, None, create_icon=True)
                             md_text = MarkdownConverter.assemble_markdown(metadata, md_text)
                             atomic_write(target_file, md_text)
-                            self.log.info(f"Successfully added metadata to '{target_file}'")
-                            continue
                         continue
-                    self.log.info(f"Converting '{source_file}' to markdown...")
-                    markdown = self.converter.convert(source_file)
-                    if markdown is None:
-                        self.log.error(f"Failed to convert '{source_file}' to markdown")
-                        continue
-                    metadata = self.parse_calibre_metadata(opf_path, None, create_icon=True)
-                    markdown = MarkdownConverter.assemble_markdown(metadata, markdown)
-                    atomic_write(target_file, markdown)
-                    self.log.info(f"Successfully converted '{source_file}' to markdown: {target_file}")
-                    
-                    # Manually clear large strings and trigger GC
-                    del markdown
-                    del metadata
-                    clear_memory()
+
+                    # Hand off to either batching (docling) or legacy sync path (pandoc/text)
+                    ext = os.path.splitext(source_file)[1].lower()
+                    if ext in docling_exts:
+                        full_metadata = self.parse_calibre_metadata(opf_path, None, create_icon=True)
+                        docling_tasks.append({
+                            'source': source_file,
+                            'target': target_file,
+                            'metadata': full_metadata
+                        })
+                        if len(docling_tasks) >= batch_size:
+                            self.converter.bulk_convert_isolated(docling_tasks, concurrency=concurrency)
+                            docling_tasks = []
+                            clear_memory()
+                    else:
+                        # Legacy sync path (Pandoc/EPUB/Text)
+                        self.log.info(f"Converting '{source_file}' to markdown using sync path...")
+                        markdown = self.converter.convert(source_file)
+                        if markdown:
+                            full_metadata = self.parse_calibre_metadata(opf_path, None, create_icon=True)
+                            full_md = MarkdownConverter.assemble_markdown(full_metadata, markdown)
+                            atomic_write(target_file, full_md)
+                            self.log.info(f"Successfully converted '{source_file}'")
+                        clear_memory()
+
+        # Final flush for remaining docling tasks
+        if docling_tasks:
+            self.converter.bulk_convert_isolated(docling_tasks, concurrency=concurrency)
+            clear_memory()
 
 
 @runtime_checkable
@@ -688,9 +823,9 @@ def get_config():
         atomic_write(config_file, json.dumps(config, indent=4))
     return config
 
-def calibre_main(config, worker_id: int = 0, total_workers: int = 1):
+def calibre_main(config, worker_id: int = 0, total_workers: int = 1, concurrency: int = 4):
     converter = CalibreConverter(config['calibre_path'], config['markdown_path'])
-    converter.mirror_library(config['target_series'], worker_id, total_workers)
+    converter.mirror_library(config['target_series'], worker_id, total_workers, concurrency)
 
 def sum_main(config, worker_id: int = 0, total_workers: int = 1):
     converter = Summarizer(chunk_size=config['chunk_size'])
@@ -698,13 +833,18 @@ def sum_main(config, worker_id: int = 0, total_workers: int = 1):
     return
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
     
     parser = argparse.ArgumentParser(description="Summarizer: Document conversion and summary generation.")
     parser.add_argument("-c", "--calibre", action="store_true", help="Mirror Calibre library and convert to markdown")
     parser.add_argument("-s", "--summarize", action="store_true", help="Generate summaries for markdown documents")
     parser.add_argument("--worker-id", type=int, default=0, help="Worker ID for deterministic partitioning (0 to total-workers - 1)")
     parser.add_argument("--total-workers", type=int, default=1, help="Total number of workers for deterministic partitioning")
+    parser.add_argument("--concurrency", type=int, default=4, help="Number of parallel processes for PDF conversion (default 4)")
     
     args = parser.parse_args()
     config = get_config()
@@ -716,7 +856,7 @@ if __name__ == "__main__":
             print("Please chose one option: -c or -s.")
             exit(1)
         if args.calibre:
-            calibre_main(config, args.worker_id, args.total_workers)
+            calibre_main(config, args.worker_id, args.total_workers, args.concurrency)
         
         if args.summarize:
             sum_main(config, args.worker_id, args.total_workers)
