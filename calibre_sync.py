@@ -315,10 +315,16 @@ def process_book_dir(calibre_lib_path: str, book_dir: str, target_series: list, 
     
     try:
         cmd = [python_exe, converter_script, source_file, temp_target]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        
-        if result.returncode != 0:
-            logging.error(f"Conversion failed for {source_file}:\n{result.stderr}")
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            stdout, stderr = p.communicate()
+        except BaseException:
+            p.kill()
+            p.wait()
+            raise
+            
+        if p.returncode != 0:
+            logging.error(f"Conversion failed for {source_file}:\n{stderr}")
             if os.path.exists(temp_target):
                 os.remove(temp_target)
             return

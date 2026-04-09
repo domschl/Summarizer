@@ -5,6 +5,7 @@ description = "macOS PDF and EPUB to Markdown converter using Docling and Pandoc
 requires-python = ">=3.13"
 dependencies = [
     "docling>=2.84.0",
+    "pypdf>=6.9.2",
 ]
 
 [project.scripts]

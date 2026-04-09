@@ -64,9 +64,15 @@ def process_markdown_file(source_file: str, target_file: str, is_dry_run: bool):
 
         cmd = [python_exe, summarizer_script, source_file, target_file]
         # We don't capture output here so the progress bars/chunk lines natively print to stdout.
-        result = subprocess.run(cmd) 
+        p = subprocess.Popen(cmd)
+        try:
+            p.wait()
+        except BaseException:
+            p.kill()
+            p.wait()
+            raise
         
-        if result.returncode != 0:
+        if p.returncode != 0:
             logging.error(f"Summarization failed for {source_file}")
         else:
             logging.info(f"Completed Summarization for: {target_file}")
