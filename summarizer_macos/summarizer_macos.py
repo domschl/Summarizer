@@ -43,6 +43,19 @@ def chunked_summarize(engine, content: str, filepath: str, chunk_size: int = 500
     if num_chunks == 0:
         return ""
         
+    if num_chunks == 1:
+        print("\n--> Document fits in one chunk. Summarizing directly...")
+        instruction = "Please provide a detailed summary of this document:"
+        prompt = engine.format_prompt([{"role": "user", "content": f"The following is the full text of '{filepath}'. {instruction}\n\n{content}"}])
+        
+        output = engine.generate(
+            prompt,
+            max_tokens=1500,
+            temp=0.2,
+            repetition_penalty=1.1
+        )
+        return get_answer_from_output(output)
+        
     chunk_summaries = []
     for i in range(num_chunks):
         start = i * chunk_size
