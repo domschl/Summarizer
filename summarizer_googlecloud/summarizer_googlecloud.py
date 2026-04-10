@@ -5,9 +5,14 @@ import argparse
 import time
 import math
 import yaml
+import logging
 from google import genai
 from google.genai import types
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
+
+# Setup logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+logger = logging.getLogger("googlecloud")
 
 # Constants
 VERSION = "0.0.1"
@@ -44,7 +49,7 @@ class GeminiEngine:
         retry=retry_if_exception(is_rate_limit_error),
         wait=wait_exponential(multiplier=2, min=10, max=120),
         stop=stop_after_attempt(10),
-        before_sleep=lambda retry_state: print(f"Rate limit hit ({retry_state.outcome.exception()}). Retrying in {retry_state.next_action.sleep}s... (Attempt {retry_state.attempt_number})")
+        before_sleep=lambda retry_state: logger.warning(f"Rate limit hit ({retry_state.outcome.exception()}). Retrying in {retry_state.next_action.sleep}s... (Attempt {retry_state.attempt_number})")
     )
     def generate(self, prompt: str, max_output_tokens: int = 1500) -> str:
         self._wait_for_rpm()
@@ -74,11 +79,12 @@ class GeminiEngine:
 
 def chunked_summarize(engine, content: str, filepath: str, chunk_size: int = 50000) -> str:
     num_chunks = math.ceil(len(content) / chunk_size)
+    filename = os.path.basename(filepath)
     if num_chunks == 0:
         return ""
         
     if num_chunks == 1:
-        print("\n--> Document fits in one chunk. Summarizing directly...")
+        logger.info(f"[{filename}] Fits in one chunk. Summarizing directly...")
         instruction = "Please provide a detailed summary of this document:"
         prompt = f"The following is the full text of '{filepath}'. {instruction}\n\n{content}"
         return engine.generate(prompt, max_output_tokens=1500)
@@ -90,17 +96,17 @@ def chunked_summarize(engine, content: str, filepath: str, chunk_size: int = 500
         chunk = content[start:end]
 
         chunk_start = time.time()
-        print(f"\r--> Summarizing chunk {i+1}/{num_chunks}...", end="", flush=True)
+        logger.info(f"[{filename}] Summarizing chunk {i+1}/{num_chunks}...")
         
         instruction = "Briefly summarize this part of the document:"
         prompt = f"{instruction}\n\n{chunk}"
         
         output = engine.generate(prompt, max_output_tokens=500)
         duration = time.time() - chunk_start
-        print(f" ({duration:.1f}s)", end="", flush=True)
+        logger.info(f"[{filename}] Chunk {i+1} completed in {duration:.1f}s")
         chunk_summaries.append(output)
 
-    print("\n--> Consolidating final summary...")
+    logger.info(f"[{filename}] Consolidating final summary...")
     consolidated_text = "\n\n".join(chunk_summaries)
 
     base_instruction = "The following are summaries of segments from a document. Please combine them into a single coherent, detailed summary:"
@@ -163,7 +169,8 @@ def summarize_file(source_file: str, destination_file: str):
             
         metadata, md_text = parse_markdown(content)
         
-        print(f"Initializing Gemini Engine ({model_name})...")
+        filename = os.path.basename(source_file)
+        logger.info(f"[{filename}] Initializing Engine ({model_name})...")
         engine = GeminiEngine(api_key, model_name)
         
         summary_text = chunked_summarize(engine, md_text, os.path.basename(source_file), chunk_size=chunk_size)
