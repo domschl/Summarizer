@@ -373,7 +373,7 @@ def sync_calibre_library(concurrency: int, is_dry_run: bool):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Calibre to Markdown converter orchestrator")
-    parser.add_argument("--concurrency", type=int, default=4, help="Number of parallel conversion processes")
+    parser.add_argument("--concurrency", type=int, default=2, help="Number of parallel conversion processes")
     parser.add_argument("--dry-run", action="store_true", help="Print operations without performing conversions")
     args = parser.parse_args()
     
