@@ -11,6 +11,8 @@ import tempfile
 import yaml
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
+import signal
+import multiprocessing
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Any
 
@@ -343,7 +345,20 @@ def process_book_dir(calibre_lib_path: str, book_dir: str, target_series: list, 
         if os.path.exists(temp_target):
             os.remove(temp_target)
 
+
+# Global executor to allow signal handler access
+_executor = None
+
+def signal_handler(sig, frame):
+    global _executor
+    logging.warning(f"Interrupt signal ({sig}) received. Shutting down...")
+    if _executor:
+        _executor.shutdown(wait=False, cancel_futures=True)
+    # Using os._exit to bypass any blocking finally blocks and exit immediately
+    os._exit(1)
+
 def sync_calibre_library(concurrency: int, is_dry_run: bool):
+    global _executor
     config = get_config()
     calibre_path = config.get("calibre_path")
     markdown_path = config.get("markdown_path")
@@ -360,21 +375,47 @@ def sync_calibre_library(concurrency: int, is_dry_run: bool):
 
     logging.info(f"Found {len(book_dirs)} book entries in Calibre. Processing with concurrency {concurrency}...")
 
-    with ProcessPoolExecutor(max_workers=concurrency) as executor:
+    _executor = ProcessPoolExecutor(max_workers=concurrency)
+    try:
         futures = []
         for bd in book_dirs:
-            futures.append(executor.submit(process_book_dir, calibre_path, bd, target_series, markdown_path, is_dry_run))
+            futures.append(_executor.submit(process_book_dir, calibre_path, bd, target_series, markdown_path, is_dry_run))
             
         for future in as_completed(futures):
             try:
                 future.result()
             except Exception as e:
                 logging.error(f"Task generated an exception: {e}")
+    except KeyboardInterrupt:
+        logging.warning("Interrupted by user. Shutting down...")
+        if _executor:
+            _executor.shutdown(wait=False, cancel_futures=True)
+        # Re-raise to let the outer block handle exit
+        raise
+    finally:
+        if _executor:
+            # If we're here normally, wait=True is fine. 
+            # If we're here due to an interrupt, it might have been shut down already.
+            _executor.shutdown(wait=False, cancel_futures=True)
+            _executor = None
 
 if __name__ == "__main__":
+    # Ensure subprocesses are started cleanly on all platforms
+    try:
+        multiprocessing.set_start_method('spawn')
+    except RuntimeError:
+        pass # Already set
+
+    # Register signal handlers
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
     parser = argparse.ArgumentParser(description="Calibre to Markdown converter orchestrator")
     parser.add_argument("--concurrency", type=int, default=2, help="Number of parallel conversion processes")
     parser.add_argument("--dry-run", action="store_true", help="Print operations without performing conversions")
     args = parser.parse_args()
     
-    sync_calibre_library(args.concurrency, args.dry_run)
+    try:
+        sync_calibre_library(args.concurrency, args.dry_run)
+    except KeyboardInterrupt:
+        sys.exit(1)

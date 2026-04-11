@@ -4,6 +4,7 @@ import argparse
 import time
 import math
 import yaml
+import threading
 from huggingface_hub import hf_hub_download
 from llama_cpp import Llama
 
@@ -128,6 +129,25 @@ def parse_markdown(md_text: str):
         yaml_metadata = None
     return yaml_metadata, content
 
+def get_platform_config():
+    config_file = os.path.expanduser("~/.config/summarizer/summarizer_config_linux.json")
+    try:
+        if os.path.exists(config_file):
+            with open(config_file, 'r') as f:
+                import json
+                return json.load(f)
+    except Exception:
+        pass
+    return {"chunk_size": 50000}
+
+def watchdog():
+    """Exits the process if the parent process dies (PPID becomes 1)."""
+    while True:
+        if os.getppid() == 1:
+            print("Parent process died. Exiting...")
+            os._exit(1)
+        time.sleep(2)
+
 def assemble_markdown(metadata, md_text: str) -> str:
     if metadata is None:
         return md_text
@@ -154,12 +174,15 @@ def summarize_file(source_file: str, destination_file: str):
         with open(source_file, 'r', encoding='utf-8') as f:
             content = f.read()
             
+        config = get_platform_config()
+        chunk_size = config.get("chunk_size", 50000)
+        
         metadata, md_text = parse_markdown(content)
         
         print(f"Initializing LlamaCpp Engine...")
         engine = LlamaCppEngine()
         
-        summary_text = chunked_summarize(engine, md_text, os.path.basename(source_file))
+        summary_text = chunked_summarize(engine, md_text, os.path.basename(source_file), chunk_size=chunk_size)
         
         sum_metadata = {}
         if metadata:
@@ -188,6 +211,10 @@ def summarize_file(source_file: str, destination_file: str):
         sys.exit(1)
 
 def main():
+    # Start watchdog thread
+    w = threading.Thread(target=watchdog, daemon=True)
+    w.start()
+
     parser = argparse.ArgumentParser(description="Summarize Markdown using Llama.cpp (Linux)")
     parser.add_argument("source", help="Path to the source markdown file")
     parser.add_argument("destination", help="Path to the destination summary markdown file")
