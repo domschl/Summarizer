@@ -28,31 +28,15 @@ def get_config():
             default_name = "summarizer_linux"
 
         config = {
-            "markdown_path": os.path.expanduser("~/ReferenceLibrary/MarkdownLibrary"),
+            "markdown_path": os.path.expanduser("~/AINotes/MarkdownBooks"),
             "target_series": ["anthropology", "music", "history"],
-            "summaries_path": os.path.expanduser("~/ReferenceLibrary/Summaries"),
+            "summaries_path": os.path.expanduser("~/AINotes/BookSummaries"),
             "summarizer_name": default_name
         }
         os.makedirs(os.path.dirname(config_file), exist_ok=True)
         with open(config_file, 'w') as f:
             f.write(json.dumps(config, indent=4))
     
-    # Ensure all required keys exist
-    changed = False
-    if "summaries_path" not in config:
-        config["summaries_path"] = os.path.expanduser("~/ReferenceLibrary/Summaries")
-        changed = True
-    if "summarizer_name" not in config:
-        if sys.platform =="darwin":
-            config["summarizer_name"] = "summarizer_macos"
-        else:
-            config["summarizer_name"] = "summarizer_linux"
-        changed = True
-    
-    if changed:
-        with open(config_file, 'w') as f:
-            f.write(json.dumps(config, indent=4))
-
     return config
 
 def process_markdown_file(source_file: str, target_file: str, is_dry_run: bool):
