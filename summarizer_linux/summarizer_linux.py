@@ -8,6 +8,10 @@ import threading
 from huggingface_hub import hf_hub_download
 from llama_cpp import Llama
 
+# Constants
+VERSION = "0.1.0"
+MODEL_NAME = "gemma-4-26b-it-gguf"
+
 class LlamaCppEngine:
     def __init__(self, repo_id: str = "unsloth/gemma-4-26B-A4B-it-GGUF", filename: str = "gemma-4-26B-A4B-it-UD-Q4_K_XL.gguf"):
         print(f"Loading LlamaCpp model from {repo_id}...")
@@ -189,6 +193,13 @@ def summarize_file(source_file: str, destination_file: str):
             for key in ['title', 'authors', 'tags', 'uuid']:
                 if key in metadata:
                     sum_metadata[key] = metadata[key]
+        
+        sum_metadata['summary_version'] = f"{MODEL_NAME} {VERSION}"
+        
+        # Track which version of the markdown was used for this summary
+        import hashlib
+        source_md_hash = hashlib.sha256(content.encode('utf-8')).hexdigest()
+        sum_metadata['source_md_hash'] = source_md_hash
                     
         full_summary = assemble_markdown(sum_metadata, summary_text)
         
