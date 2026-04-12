@@ -249,6 +249,10 @@ def summarize_file(source_file: str, destination_file: str):
     for key in ['title', 'authors', 'tags', 'uuid']:
         if key in metadata: sum_metadata[key] = metadata[key]
     sum_metadata['summary_version'] = f"{MODEL_NAME} {VERSION}"
+    # Track which version of the markdown was used for this summary
+    import hashlib
+    source_md_hash = hashlib.sha256(content.encode('utf-8')).hexdigest()
+    sum_metadata['source_md_hash'] = source_md_hash
     
     header = yaml.dump(sum_metadata, default_flow_style=False, indent=2)
     full_summary = f"---\n{header}---\n{summary_text}"

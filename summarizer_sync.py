@@ -6,9 +6,14 @@ import argparse
 import subprocess
 import signal
 import multiprocessing
+import re
+import yaml
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
+from naming import generate_summary_filename, check_collisions, compute_file_hash
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+
 
 def get_config():
     config_file = os.path.expanduser("~/.config/summarizer/summarizer_config.json")
@@ -16,7 +21,11 @@ def get_config():
     try:
         if os.path.exists(config_file):
             with open(config_file, 'r') as f:
-                config = json.load(f)
+                content = f.read()
+            # Handle trailing commas (non-standard JSON)
+            content = re.sub(r',\s*}', '}', content)
+            content = re.sub(r',\s*]', ']', content)
+            config = json.loads(content)
     except Exception as e:
         logging.error(f"Error loading config: {e}")
         
@@ -39,7 +48,247 @@ def get_config():
     
     return config
 
-def process_markdown_file(source_file: str, target_file: str, is_dry_run: bool):
+
+def split_header_content(text: str) -> tuple[str, str]:
+    separator1 = "---\n"
+    separator2 = "\n---\n"
+    if text.startswith(separator1):
+        d1 = 0
+    else:
+        d1 = text.find(separator2)
+        if d1 > 10 or d1 == -1:
+            return ("", text)
+        d1 += 1
+
+    d2 = text[d1+len(separator1):].find(separator2)
+    if d2 == -1:
+        return ("", text)
+    d2 += d1+len(separator1)
+    header = text[d1+len(separator1):d2+1]
+    content = text[d2+len(separator2):]
+    return (header, content)
+
+
+def parse_frontmatter(filepath: str) -> dict | None:
+    """Read a markdown file and return its YAML frontmatter as a dict."""
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            content = f.read()
+    except Exception:
+        return None
+    
+    header, _ = split_header_content(content)
+    if not header:
+        return None
+    try:
+        return yaml.safe_load(header)
+    except Exception:
+        return None
+
+
+def update_frontmatter_inplace(filepath: str, updates: dict):
+    """Update specific fields in a file's YAML frontmatter."""
+    with open(filepath, 'r', encoding='utf-8') as f:
+        text = f.read()
+    
+    header, content = split_header_content(text)
+    try:
+        metadata = yaml.safe_load(header) if header else {}
+    except Exception:
+        metadata = {}
+    if metadata is None:
+        metadata = {}
+    
+    metadata.update(updates)
+    
+    filtered = {}
+    for k, v in metadata.items():
+        if isinstance(v, list) and len(v) == 0:
+            continue
+        if isinstance(v, str) and v == "":
+            continue
+        filtered[k] = v
+    
+    new_header = yaml.dump(filtered, default_flow_style=False, indent=2)
+    if not new_header.endswith("\n"):
+        new_header += "\n"
+    
+    with open(filepath, 'w', encoding='utf-8') as f:
+        f.write(f"---\n{new_header}---\n{content}")
+        f.flush()
+        os.fsync(f.fileno())
+
+
+# ─── Two-phase sync ───────────────────────────────────────────────────────────
+
+def scan_existing_summaries(summaries_path: str) -> dict[str, dict]:
+    """Scan existing summary files. Returns {uuid: info_dict}."""
+    index = {}
+    for root, dirs, files in os.walk(summaries_path):
+        for filename in files:
+            if not filename.endswith('.md'):
+                continue
+            filepath = os.path.join(root, filename)
+            meta = parse_frontmatter(filepath)
+            if not meta or not meta.get('uuid'):
+                continue
+            
+            uuid = meta['uuid']
+            series = os.path.relpath(root, summaries_path)
+            index[uuid] = {
+                'path': filepath,
+                'filename': filename,
+                'series': series,
+                'title': meta.get('title', ''),
+                'authors': meta.get('authors', []),
+                'source_md_hash': meta.get('source_md_hash', ''),
+                'summary_version': meta.get('summary_version', ''),
+                'metadata': meta,
+            }
+    return index
+
+
+def scan_markdown_sources(markdown_path: str, target_series: list[str]) -> dict[str, dict]:
+    """Scan markdown files (source of truth for summaries). Returns {uuid: info_dict}."""
+    index = {}
+    for root, dirs, files in os.walk(markdown_path):
+        for filename in files:
+            if not filename.endswith('.md'):
+                continue
+            filepath = os.path.join(root, filename)
+            meta = parse_frontmatter(filepath)
+            if not meta or not meta.get('uuid'):
+                continue
+            
+            uuid = meta['uuid']
+            series = os.path.relpath(root, markdown_path)
+            
+            # Filter by series if configured
+            if target_series:
+                if series.lower() not in target_series and series != '.':
+                    continue
+                if series == '.' and 'unspecified_series' not in target_series:
+                    continue
+            
+            title = meta.get('title', '')
+            authors = meta.get('authors', [])
+            first_author = authors[0] if authors else ''
+            content_hash = compute_file_hash(filepath)
+            
+            index[uuid] = {
+                'path': filepath,
+                'filename': filename,
+                'series': series,
+                'title': title,
+                'authors': authors,
+                'first_author': first_author,
+                'content_hash': content_hash,
+                'expected_summary_filename': generate_summary_filename(title, first_author),
+                'metadata': meta,
+            }
+    return index
+
+
+def plan_summary_sync(markdown_index: dict, summary_index: dict, summaries_path: str) -> list[dict]:
+    """
+    Compare markdown sources and existing summaries, returning a list of actions.
+    
+    Actions: ADD, REMOVE, RESUMMARISE, RENAME, MOVE, SKIP
+    """
+    actions = []
+    
+    md_uuids = set(markdown_index.keys())
+    sum_uuids = set(summary_index.keys())
+    
+    # Markdowns without a summary → ADD
+    for uuid in md_uuids - sum_uuids:
+        mi = markdown_index[uuid]
+        target_dir = os.path.join(summaries_path, mi['series'])
+        target_file = os.path.join(target_dir, mi['expected_summary_filename'])
+        actions.append({
+            'action': 'ADD',
+            'uuid': uuid,
+            'title': mi['title'],
+            'source_file': mi['path'],
+            'content_hash': mi['content_hash'],
+            'target_file': target_file,
+            'target_series': mi['series'],
+        })
+    
+    # Summaries with no corresponding markdown → REMOVE
+    for uuid in sum_uuids - md_uuids:
+        si = summary_index[uuid]
+        actions.append({
+            'action': 'REMOVE',
+            'uuid': uuid,
+            'title': si['title'],
+            'path': si['path'],
+        })
+    
+    # Both exist → check for changes
+    for uuid in md_uuids & sum_uuids:
+        mi = markdown_index[uuid]
+        si = summary_index[uuid]
+        
+        # Check if source markdown content has changed
+        if si['source_md_hash'] and si['source_md_hash'] != mi['content_hash']:
+            target_dir = os.path.join(summaries_path, mi['series'])
+            target_file = os.path.join(target_dir, mi['expected_summary_filename'])
+            actions.append({
+                'action': 'RESUMMARISE',
+                'uuid': uuid,
+                'title': mi['title'],
+                'old_path': si['path'],
+                'source_file': mi['path'],
+                'content_hash': mi['content_hash'],
+                'target_file': target_file,
+                'target_series': mi['series'],
+            })
+            continue
+        
+        # Check if filename changed
+        expected_fn = mi['expected_summary_filename']
+        needs_rename = si['filename'] != expected_fn
+        
+        # Check if series changed
+        needs_move = si['series'] != mi['series']
+        
+        if needs_rename or needs_move:
+            target_dir = os.path.join(summaries_path, mi['series'])
+            target_file = os.path.join(target_dir, expected_fn)
+            actions.append({
+                'action': 'RENAME' if needs_rename else 'MOVE',
+                'uuid': uuid,
+                'title': mi['title'],
+                'old_path': si['path'],
+                'new_path': target_file,
+                'old_filename': si['filename'],
+                'new_filename': expected_fn,
+            })
+            continue
+        
+        # Check if source_md_hash is missing (needs backfill)
+        if not si['source_md_hash']:
+            actions.append({
+                'action': 'UPDATE_HASH',
+                'uuid': uuid,
+                'title': mi['title'],
+                'path': si['path'],
+                'content_hash': mi['content_hash'],
+            })
+            continue
+        
+        actions.append({
+            'action': 'SKIP',
+            'uuid': uuid,
+            'title': mi['title'],
+        })
+    
+    return actions
+
+
+def process_markdown_file(source_file: str, target_file: str, content_hash: str, is_dry_run: bool):
+    """Dispatch summarisation for a single markdown file."""
     if os.path.exists(target_file):
         logging.info(f"Skipping summarization: Target file already exists at {target_file}")
         return
@@ -81,6 +330,12 @@ def process_markdown_file(source_file: str, target_file: str, is_dry_run: bool):
             logging.error(f"Summarization failed for {source_file} (code {p.returncode})")
         else:
             logging.info(f"Completed Summarization for: {target_file}")
+            # Backfill the source_md_hash into the summary
+            if os.path.exists(target_file) and content_hash:
+                try:
+                    update_frontmatter_inplace(target_file, {'source_md_hash': content_hash})
+                except Exception as e:
+                    logging.error(f"Failed to update source_md_hash: {e}")
             
         return p.returncode
             
@@ -115,61 +370,125 @@ def sync_summaries(concurrency: int, is_dry_run: bool):
         if not is_dry_run:
             os.makedirs(summaries_path, exist_ok=True)
 
-    markdown_files = []
-    for root, dirs, files in os.walk(markdown_path):
-        for file in files:
-            if file.endswith(".md"):
-                source_file = os.path.join(root, file)
+    # ─── Phase 1: Plan ────────────────────────────────────────────────
+    logging.info("Phase 1: Scanning existing summary files...")
+    summary_index = scan_existing_summaries(summaries_path)
+    logging.info(f"  Found {len(summary_index)} existing summaries with UUIDs")
+
+    logging.info("Phase 1: Scanning markdown sources...")
+    markdown_index = scan_markdown_sources(markdown_path, target_series)
+    logging.info(f"  Found {len(markdown_index)} markdown files (matching series filter)")
+
+    logging.info("Phase 1: Generating sync plan...")
+    actions = plan_summary_sync(markdown_index, summary_index, summaries_path)
+    
+    # Summarise the plan
+    action_counts = {}
+    for a in actions:
+        t = a['action']
+        action_counts[t] = action_counts.get(t, 0) + 1
+    
+    logging.info("Phase 1: Sync plan summary:")
+    for action_type in ['ADD', 'REMOVE', 'RESUMMARISE', 'RENAME', 'MOVE', 'UPDATE_HASH', 'SKIP']:
+        count = action_counts.get(action_type, 0)
+        if count > 0:
+            logging.info(f"  {action_type}: {count}")
+    
+    executable_actions = [a for a in actions if a['action'] != 'SKIP']
+    if not executable_actions:
+        logging.info("Nothing to do. All summaries are up to date.")
+        return
+    
+    logging.info(f"\nPhase 2: Executing {len(executable_actions)} action(s)...")
+
+    # ─── Phase 2: Execute ─────────────────────────────────────────────
+    # Sequential actions first
+    sequential_types = ('REMOVE', 'RENAME', 'MOVE', 'UPDATE_HASH')
+    sequential = [a for a in executable_actions if a['action'] in sequential_types]
+    parallel = [a for a in executable_actions if a['action'] not in sequential_types]
+    
+    total = len(executable_actions)
+    idx = 1
+    
+    for action in sequential:
+        action_type = action['action']
+        prefix = f"[{idx}/{total}]"
+        
+        if action_type == 'REMOVE':
+            logging.info(f"{prefix} REMOVE: {action['title']} ({action['path']})")
+            if not is_dry_run:
+                try:
+                    os.remove(action['path'])
+                except Exception as e:
+                    logging.error(f"{prefix} Failed to remove: {e}")
+        
+        elif action_type in ('RENAME', 'MOVE'):
+            old = action['old_path']
+            new = action['new_path']
+            logging.info(f"{prefix} {action_type}: {action.get('old_filename', 'N/A')} -> {action.get('new_filename', 'N/A')}")
+            if not is_dry_run:
+                try:
+                    target_dir = os.path.dirname(new)
+                    os.makedirs(target_dir, exist_ok=True)
+                    os.rename(old, new)
+                except Exception as e:
+                    logging.error(f"{prefix} {action_type} failed: {e}")
+        
+        elif action_type == 'UPDATE_HASH':
+            logging.info(f"{prefix} UPDATE_HASH: {os.path.basename(action['path'])}")
+            if not is_dry_run:
+                try:
+                    update_frontmatter_inplace(action['path'], {
+                        'source_md_hash': action['content_hash']
+                    })
+                except Exception as e:
+                    logging.error(f"{prefix} UPDATE_HASH failed: {e}")
+        
+        idx += 1
+    
+    # Parallel actions (ADD, RESUMMARISE)
+    if parallel:
+        _executor = ProcessPoolExecutor(max_workers=concurrency)
+        try:
+            futures = {}
+            for action in parallel:
+                action_type = action['action']
+                source = action['source_file']
+                target = action['target_file']
+                content_hash = action.get('content_hash', '')
                 
-                # Filter by series if configured
-                if target_series:
-                    rel_path = os.path.relpath(source_file, markdown_path)
-                    path_parts = rel_path.split(os.sep)
-                    if len(path_parts) > 1:
-                        series = path_parts[0].lower()
-                        if series not in target_series:
-                            continue
-                    else:
-                        # File is in the root of markdown_path, no series
-                        if "unspecified_series" not in target_series:
-                            continue
-
-                markdown_files.append(source_file)
-
-    logging.info(f"Found {len(markdown_files)} markdown files. Processing with concurrency {concurrency}...")
-
-    tasks = []
-    for source_file in markdown_files:
-        rel_path = os.path.relpath(source_file, markdown_path)
-        target_file = os.path.join(summaries_path, rel_path)
-        tasks.append((source_file, target_file))
-
-    _executor = ProcessPoolExecutor(max_workers=concurrency)
-    try:
-        futures = {_executor.submit(process_markdown_file, src, tgt, is_dry_run): (src, tgt) for src, tgt in tasks}
+                logging.info(f"[{idx}/{total}] {action_type}: {action['title']}")
+                
+                if action_type == 'RESUMMARISE' and not is_dry_run:
+                    old_path = action.get('old_path')
+                    if old_path and os.path.exists(old_path):
+                        os.remove(old_path)
+                
+                future = _executor.submit(process_markdown_file, source, target, content_hash, is_dry_run)
+                futures[future] = action
+                idx += 1
             
-        for future in as_completed(futures):
-            try:
-                ret_code = future.result()
-                if ret_code == 10:
-                    logging.warning("Daily quota reached signal received (code 10). Stopping further tasks...")
-                    # Shutdown and cancel pending futures
-                    _executor.shutdown(wait=False, cancel_futures=True)
-                    break
-            except Exception as e:
-                logging.error(f"Task generated an exception: {e}")
-    except KeyboardInterrupt:
-        logging.warning("Interrupted by user. Shutting down...")
-        if _executor:
-            _executor.shutdown(wait=False, cancel_futures=True)
-        # Re-raise to let the outer block handle exit
-        raise
-    finally:
-        if _executor:
-            # If we're here normally, wait=True is fine. 
-            # If we're here due to an interrupt, it might have been shut down already.
-            _executor.shutdown(wait=False, cancel_futures=True)
-            _executor = None
+            for future in as_completed(futures):
+                try:
+                    ret_code = future.result()
+                    if ret_code == 10:
+                        logging.warning("Daily quota reached signal received (code 10). Stopping further tasks...")
+                        _executor.shutdown(wait=False, cancel_futures=True)
+                        break
+                except Exception as e:
+                    action = futures[future]
+                    logging.error(f"Task generated an exception for '{action['title']}': {e}")
+        except KeyboardInterrupt:
+            logging.warning("Interrupted by user. Shutting down...")
+            if _executor:
+                _executor.shutdown(wait=False, cancel_futures=True)
+            raise
+        finally:
+            if _executor:
+                _executor.shutdown(wait=False, cancel_futures=True)
+                _executor = None
+    
+    logging.info("Sync complete.")
 
 if __name__ == "__main__":
     # Ensure subprocesses are started cleanly on all platforms
