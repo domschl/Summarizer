@@ -8,7 +8,8 @@ import re
 import yaml
 import logging
 import threading
-from datetime import datetime
+import hashlib
+from datetime import datetime, timedelta
 from google import genai
 from google.genai import types
 
@@ -190,7 +191,81 @@ class GemmaEngine:
 
         raise Exception("Max retry attempts reached.")
 
-def chunked_summarize(engine, content: str, filepath: str, chunk_size: int) -> str:
+class WorkCache:
+    def __init__(self, cache_dir: str = "~/.cache/summarizer/work_cache"):
+        self.cache_dir = os.path.expanduser(cache_dir)
+        os.makedirs(self.cache_dir, exist_ok=True)
+
+    def _get_path(self, doc_hash: str, chunk_size: int) -> str:
+        return os.path.join(self.cache_dir, f"{doc_hash}_{chunk_size}.json")
+
+    def load_progress(self, doc_hash: str, chunk_size: int) -> tuple[list[str], int]:
+        path = self._get_path(doc_hash, chunk_size)
+        if os.path.exists(path):
+            try:
+                with open(path, 'r') as f:
+                    data = json.load(f)
+                    last_updated = datetime.fromisoformat(data['last_updated'])
+                    if (datetime.now() - last_updated).days < 14:
+                        return data.get('chunk_summaries', []), data.get('next_index', 0)
+                    else:
+                        logger.info(f"Cache entry too old, discarding: {path}")
+                        os.remove(path)
+            except Exception as e:
+                logger.warning(f"Failed to load cache {path}: {e}")
+        return [], 0
+
+    def save_progress(self, doc_hash: str, chunk_size: int, chunk_summaries: list[str], next_index: int, filepath: str):
+        path = self._get_path(doc_hash, chunk_size)
+        data = {
+            "doc_hash": doc_hash,
+            "chunk_size": chunk_size,
+            "filepath": filepath,
+            "chunk_summaries": chunk_summaries,
+            "next_index": next_index,
+            "last_updated": datetime.now().isoformat()
+        }
+        temp_path = path + ".tmp"
+        try:
+            with open(temp_path, 'w') as f:
+                json.dump(data, f, indent=4)
+            os.replace(temp_path, path)
+        except Exception as e:
+            logger.error(f"Failed to save work cache: {e}")
+
+    def clear_progress(self, doc_hash: str, chunk_size: int):
+        path = self._get_path(doc_hash, chunk_size)
+        if os.path.exists(path):
+            try:
+                os.remove(path)
+            except Exception as e:
+                logger.warning(f"Failed to remove cache entry: {e}")
+
+    def cleanup_old_entries(self, max_age_days: int = 14):
+        now = datetime.now()
+        count = 0
+        try:
+            for filename in os.listdir(self.cache_dir):
+                if not filename.endswith(".json"):
+                    continue
+                path = os.path.join(self.cache_dir, filename)
+                try:
+                    with open(path, 'r') as f:
+                        data = json.load(f)
+                        last_updated = datetime.fromisoformat(data['last_updated'])
+                        if (now - last_updated).days >= max_age_days:
+                            os.remove(path)
+                            count += 1
+                except Exception:
+                    # If we can't read it or it's malformed, maybe keep it or delete it. 
+                    # Let's just skip for now to be safe.
+                    pass
+            if count > 0:
+                logger.info(f"Cleaned up {count} old work-cache entries.")
+        except Exception as e:
+            logger.error(f"Error during cache cleanup: {e}")
+
+def chunked_summarize(engine, content: str, filepath: str, chunk_size: int, doc_hash: str) -> str:
     num_chunks = math.ceil(len(content) / chunk_size)
     filename = os.path.basename(filepath)
     
@@ -200,8 +275,12 @@ def chunked_summarize(engine, content: str, filepath: str, chunk_size: int) -> s
         prompt = f"The following is text from '{filepath}'. Please provide a detailed summary:\n\n{content}"
         return engine.generate(prompt, max_output_tokens=1500)
         
-    chunk_summaries = []
-    for i in range(num_chunks):
+    cache = WorkCache()
+    chunk_summaries, start_index = cache.load_progress(doc_hash, chunk_size)
+    if start_index > 0:
+        logger.info(f"[{filename}] Resuming from chunk {start_index+1}/{num_chunks}...")
+
+    for i in range(start_index, num_chunks):
         start = i * chunk_size
         end = start + chunk_size
         chunk = content[start:end]
@@ -210,11 +289,15 @@ def chunked_summarize(engine, content: str, filepath: str, chunk_size: int) -> s
         prompt = f"Briefly summarize this part of document '{filepath}':\n\n{chunk}"
         output = engine.generate(prompt, max_output_tokens=500)
         chunk_summaries.append(output)
+        cache.save_progress(doc_hash, chunk_size, chunk_summaries, i + 1, filepath)
 
     logger.info(f"[{filename}] Consolidating...")
     consolidated_text = "\n\n".join(chunk_summaries)
     final_prompt = f"The following are summaries of segments from '{filepath}'. Please combine them into a single coherent summary:\n\n{consolidated_text}"
-    return engine.generate(final_prompt, max_output_tokens=1500)
+    summary = engine.generate(final_prompt, max_output_tokens=1500)
+    
+    cache.clear_progress(doc_hash, chunk_size)
+    return summary
 
 def split_header_content(text: str) -> tuple[str, str]:
     if not text.startswith("---\n"): return ("", text)
@@ -241,11 +324,17 @@ def summarize_file(source_file: str, destination_file: str):
 
     with open(source_file, 'r', encoding='utf-8') as f:
         content = f.read()
-    
     metadata, md_text = parse_markdown(content)
+    
+    # Calculate document hash early for work-cache and metadata
+    doc_hash = hashlib.sha256(md_text.encode('utf-8')).hexdigest()
+    
+    # Initialize cache and perform background cleanup
+    cache = WorkCache()
+    cache.cleanup_old_entries()
 
     engine = GemmaEngine(api_key)
-    summary_text = chunked_summarize(engine, md_text, os.path.basename(source_file), chunk_size)
+    summary_text = chunked_summarize(engine, md_text, os.path.basename(source_file), chunk_size, doc_hash)
     
     # Simple metadata preservation
     sum_metadata = {}
@@ -253,9 +342,7 @@ def summarize_file(source_file: str, destination_file: str):
         if key in metadata: sum_metadata[key] = metadata[key]
     sum_metadata['summary_version'] = f"{MODEL_NAME} {VERSION}"
     # Track which version of the markdown was used for this summary
-    import hashlib
-    source_md_hash = hashlib.sha256(content.encode('utf-8')).hexdigest()
-    sum_metadata['source_md_hash'] = source_md_hash
+    sum_metadata['source_md_hash'] = doc_hash
     
     header = yaml.dump(sum_metadata, default_flow_style=False, indent=2)
     full_summary = f"---\n{header}---\n{summary_text}"
