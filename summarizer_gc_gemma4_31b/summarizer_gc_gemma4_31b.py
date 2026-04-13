@@ -164,7 +164,7 @@ class GemmaEngine:
                 # Google's API response is (currently?) broken, doesn't give correct 
                 # retry times or responses. A 'rate limit' in 429 seems do indicate 
                 # that entire daily quota is exhausted, at least for the 'free' tier.
-                if "rate limit" in msg or ("quota" in msg and "daily" in msg):  
+                if "Rate limit" in msg or ("quota" in msg and "daily" in msg):  
                     logger.error("Daily API Quota reached.")
                     # Set block until tomorrow at 08:00 (conservative safety)
                     from datetime import timedelta
