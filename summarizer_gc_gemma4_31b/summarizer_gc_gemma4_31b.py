@@ -41,7 +41,7 @@ def watchdog():
         if os.getppid() == 1:
             logger.warning("Parent process died. Exiting...")
             os._exit(1)
-        time.sleep(2)
+        time.sleep(0.1)
 
 def get_platform_config():
     config_file = os.path.expanduser("~/.config/summarizer/summarizer_config_gc_gemma4_31b.json")
@@ -160,7 +160,10 @@ class GemmaEngine:
                 msg = str(e).lower()
                 
                 # 1. Check for specific daily quota exhaustion first (often a 429 or 403)
-                if "quota" in msg and "daily" in msg:
+                # Google's API response is (currently?) broken, doesn't give correct 
+                # retry times or responses. A 'rate limit' in 429 seems do indicate 
+                # that entire daily quota is exhausted, at least for the 'free' tier.
+                if "rate limit" in msg or ("quota" in msg and "daily" in msg):  
                     logger.error("Daily API Quota reached.")
                     # Set block until tomorrow at 08:00 (conservative safety)
                     from datetime import timedelta

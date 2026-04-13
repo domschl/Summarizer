@@ -307,8 +307,8 @@ def process_markdown_file(source_file: str, target_file: str, content_hash: str,
     venv_python = os.path.join(summarizer_dir, ".venv", "bin", "python")
     python_exe = venv_python if os.path.exists(venv_python) else sys.executable
 
-    logging.info(f"Dispatching Summarization: {source_file} -> {target_file} using {summarizer_name}")
     if is_dry_run:
+        logging.info(f"Dispatching Summarization: {source_file} -> {target_file} using {summarizer_name}")
         return
         
     try:
