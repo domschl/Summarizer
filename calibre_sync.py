@@ -840,8 +840,8 @@ if __name__ == "__main__":
         pass # Already set
 
     # Register signal handlers
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
+    # signal.signal(signal.SIGINT, signal_handler)
+    # signal.signal(signal.SIGTERM, signal_handler)
 
     parser = argparse.ArgumentParser(description="Calibre to Markdown converter orchestrator")
     parser.add_argument("--concurrency", type=int, default=2, help="Number of parallel conversion processes")
@@ -851,4 +851,5 @@ if __name__ == "__main__":
     try:
         sync_calibre_library(args.concurrency, args.dry_run)
     except KeyboardInterrupt:
-        sys.exit(1)
+        pass
+    

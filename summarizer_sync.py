@@ -498,8 +498,8 @@ if __name__ == "__main__":
         pass # Already set
 
     # Register signal handlers
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
+    # signal.signal(signal.SIGINT, signal_handler)
+    # signal.signal(signal.SIGTERM, signal_handler)
 
     parser = argparse.ArgumentParser(description="Markdown Summarizer orchestrator")
     parser.add_argument("--concurrency", type=int, default=1, help="Number of parallel summarization processes (default 1)")
@@ -509,4 +509,4 @@ if __name__ == "__main__":
     try:
         sync_summaries(args.concurrency, args.dry_run)
     except KeyboardInterrupt:
-        sys.exit(1)
+        pass
