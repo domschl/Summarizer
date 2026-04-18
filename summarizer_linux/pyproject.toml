@@ -11,7 +11,7 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-summarizer_core = { workspace = true }
+summarizer_core = { path = "../summarizer_core" }
 
 [project.scripts]
 summarizer-linux = "summarizer_linux:main"

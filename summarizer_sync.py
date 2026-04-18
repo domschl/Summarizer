@@ -10,6 +10,9 @@ import re
 import yaml
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
+# Suppress KeyboardInterrupt exception stack traces globally
+signal.signal(signal.SIGINT, signal.SIG_DFL)
+
 from naming import generate_summary_filename, check_collisions, compute_file_hash
 from summarizer_core.cache import WorkCache
 
@@ -349,11 +352,10 @@ def process_markdown_file(source_file: str, target_file: str, content_hash: str,
 _executor = None
 
 def signal_handler(sig, frame):
+    # This might not be hit if SIG_DFL takes over, but kept for legacy
     global _executor
-    logging.warning(f"Interrupt signal ({sig}) received. Shutting down...")
     if _executor:
         _executor.shutdown(wait=False, cancel_futures=True)
-    # Using os._exit to bypass any blocking finally blocks and exit immediately
     os._exit(1)
 
 def sync_summaries(concurrency: int, is_dry_run: bool):

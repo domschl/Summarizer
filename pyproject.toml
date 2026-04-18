@@ -13,13 +13,6 @@ dependencies = [
     "summarizer_core",
 ]
 
-[tool.uv.workspace]
-members = [
-    "summarizer_core",
-    "summarizer_linux",
-    "summarizer_macos",
-    "summarizer_gc_gemma4_31b",
-]
-
 [tool.uv.sources]
-summarizer_core = { workspace = true }
+summarizer_core = { path = "summarizer_core" }
+

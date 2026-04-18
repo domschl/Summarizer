@@ -1,6 +1,10 @@
 import os
 import sys
 import json
+import signal
+
+# Suppress KeyboardInterrupt globally
+signal.signal(signal.SIGINT, signal.SIG_DFL)
 import argparse
 import time
 import re

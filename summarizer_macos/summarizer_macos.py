@@ -1,6 +1,10 @@
 import os
 import sys
 import argparse
+import signal
+
+# Suppress KeyboardInterrupt globally
+signal.signal(signal.SIGINT, signal.SIG_DFL)
 import threading
 import hashlib
 from mlx_vlm import load, generate
