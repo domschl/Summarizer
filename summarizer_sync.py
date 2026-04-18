@@ -11,6 +11,7 @@ import yaml
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from naming import generate_summary_filename, check_collisions, compute_file_hash
+from summarizer_core.cache import WorkCache
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 
@@ -358,6 +359,13 @@ def signal_handler(sig, frame):
 def sync_summaries(concurrency: int, is_dry_run: bool):
     global _executor
     config = get_config()
+    
+    # Initialize cache early
+    cache = WorkCache()
+    active_caches = cache.get_all_active_caches()
+    if active_caches:
+        logging.info(f"Found {len(active_caches)} active cache entries (in progress summaries).")
+        
     markdown_path = config.get("markdown_path")
     summaries_path = config.get("summaries_path")
     target_series = [s.lower() for s in config.get("target_series", [])]
@@ -446,8 +454,20 @@ def sync_summaries(concurrency: int, is_dry_run: bool):
         
         idx += 1
     
+    # Clean up caches for files that are already completed
+    for action in actions:
+        if action['action'] == 'SKIP':
+            mi = markdown_index.get(action['uuid'])
+            if mi and mi['content_hash'] in active_caches:
+                logging.info(f"Summary up-to-date for {action['title']}. Deleting stale cache entries.")
+                if not is_dry_run:
+                    cache.clear_by_hash_only(mi['content_hash'])
+
     # Parallel actions (ADD, RESUMMARISE)
     if parallel:
+        # Sort parallel actions: those with an active cache go first (0), then the rest (1)
+        parallel.sort(key=lambda a: 0 if a.get('content_hash') in active_caches else 1)
+
         _executor = ProcessPoolExecutor(max_workers=concurrency)
         try:
             futures = {}

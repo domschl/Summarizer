@@ -10,4 +10,16 @@ dependencies = [
     "uvicorn>=0.42.0",
     "pyyaml>=6.0",
     "pillow>=10.0.0",
+    "summarizer_core",
 ]
+
+[tool.uv.workspace]
+members = [
+    "summarizer_core",
+    "summarizer_linux",
+    "summarizer_macos",
+    "summarizer_gc_gemma4_31b",
+]
+
+[tool.uv.sources]
+summarizer_core = { workspace = true }

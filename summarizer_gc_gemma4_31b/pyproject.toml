@@ -6,7 +6,11 @@ requires-python = ">=3.11"
 dependencies = [
     "google-genai",
     "pyyaml",
+    "summarizer_core",
 ]
+
+[tool.uv.sources]
+summarizer_core = { workspace = true }
 
 [project.scripts]
 summarizer-gc-gemma4-31b = "summarizer_gc_gemma4_31b:main"

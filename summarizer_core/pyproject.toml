@@ -1,0 +1,8 @@
+[project]
+name = "summarizer-core"
+version = "0.1.0"
+description = "Core functionality shared by summarizer workers"
+requires-python = ">=3.11"
+dependencies = [
+    "pyyaml",
+]

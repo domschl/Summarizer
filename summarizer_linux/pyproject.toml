@@ -7,7 +7,11 @@ dependencies = [
     "llama-cpp-python>=0.3.0",
     "huggingface-hub>=1.8.0",
     "pyyaml",
+    "summarizer_core",
 ]
+
+[tool.uv.sources]
+summarizer_core = { workspace = true }
 
 [project.scripts]
 summarizer-linux = "summarizer_linux:main"

@@ -6,7 +6,11 @@ requires-python = ">=3.13"
 dependencies = [
     "mlx-vlm>=0.4.3",
     "pyyaml",
+    "summarizer_core",
 ]
+
+[tool.uv.sources]
+summarizer_core = { workspace = true }
 
 [project.scripts]
 summarizer-macos = "summarizer_macos:main"
