@@ -10,7 +10,7 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-summarizer_core = { path = "../summarizer_core" }
+summarizer_core = { path = "../summarizer_core", editable = true }
 
 [project.scripts]
 summarizer-gc-gemma4-31b = "summarizer_gc_gemma4_31b:main"
