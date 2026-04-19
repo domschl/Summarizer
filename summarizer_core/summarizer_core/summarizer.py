@@ -20,10 +20,11 @@ def chunked_summarize(engine: BaseEngine, content: str, filepath: str, chunk_siz
         print(f"\n--> Document '{filename}' fits in one chunk. Summarizing directly...")
         prompt_text = f"The following is the full text of '{filepath}'. Please provide a detailed summary:\n\n{content}"
         
+        prompt = prompt_text
         if hasattr(engine, 'format_prompt'):
-            prompt = engine.format_prompt([{"role": "user", "content": prompt_text}])
-        else:
-            prompt = prompt_text
+            formatted = engine.format_prompt([{"role": "user", "content": prompt_text}])
+            if formatted:
+                prompt = formatted
             
         output = engine.generate(prompt, max_tokens=1500)
         return get_answer_from_output(output)
@@ -53,10 +54,11 @@ def chunked_summarize(engine: BaseEngine, content: str, filepath: str, chunk_siz
         
         prompt_text = f"Briefly summarize this part of document '{filepath}':\n\n{chunk}"
         
+        prompt = prompt_text
         if hasattr(engine, 'format_prompt'):
-            prompt = engine.format_prompt([{"role": "user", "content": prompt_text}])
-        else:
-            prompt = prompt_text
+            formatted = engine.format_prompt([{"role": "user", "content": prompt_text}])
+            if formatted:
+                prompt = formatted
             
         output = engine.generate(prompt, max_tokens=500)
         duration = time.time() - chunk_start
@@ -77,10 +79,11 @@ def chunked_summarize(engine: BaseEngine, content: str, filepath: str, chunk_siz
     
     final_prompt_text = f"The following are summaries of segments from '{filepath}'. Please combine them into a single coherent, detailed summary:\n\n{consolidated_text}"
     
+    final_prompt = final_prompt_text
     if hasattr(engine, 'format_prompt'):
-        final_prompt = engine.format_prompt([{"role": "user", "content": final_prompt_text}])
-    else:
-        final_prompt = final_prompt_text
+        formatted = engine.format_prompt([{"role": "user", "content": final_prompt_text}])
+        if formatted:
+            final_prompt = formatted
         
     output = engine.generate(final_prompt, max_tokens=1500)
     final_summary = get_answer_from_output(output)
