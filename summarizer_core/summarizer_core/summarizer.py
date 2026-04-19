@@ -32,12 +32,20 @@ def chunked_summarize(engine: BaseEngine, content: str, filepath: str, chunk_siz
     chunk_summaries, start_index = cache.load_progress(doc_hash, chunk_size)
     
     if start_index > 0:
-        print(f"\n--> [{filename}] Resuming from chunk {start_index+1}/{num_chunks}...")
+        if start_index >= num_chunks:
+            print(f"\n--> [{filename}] All chunks already processed. Resuming final consolidation...")
+        else:
+            print(f"\n--> [{filename}] Resuming from chunk {start_index+1}/{num_chunks}...")
 
     for i in range(start_index, num_chunks):
         start = i * chunk_size
         end = start + chunk_size
         chunk = content[start:end]
+
+        if not chunk.strip():
+            logger.info(f"Chunk {i+1} is empty or whitespace only, skipping.")
+            cache.save_progress(doc_hash, chunk_size, chunk_summaries, i + 1, filepath)
+            continue
 
         chunk_start = time.time()
         progress_msg = f"--> [{filename}] Summarizing chunk {i+1}/{num_chunks}..."
@@ -59,6 +67,12 @@ def chunked_summarize(engine: BaseEngine, content: str, filepath: str, chunk_siz
         cache.save_progress(doc_hash, chunk_size, chunk_summaries, i + 1, filepath)
 
     print(f"\n--> [{filename}] Consolidating final summary...")
+    
+    if not chunk_summaries:
+        logger.info(f"No valid summaries generated for {filename}, returning empty summary.")
+        cache.clear_progress(doc_hash, chunk_size)
+        return ""
+        
     consolidated_text = "\n\n".join(chunk_summaries)
     
     final_prompt_text = f"The following are summaries of segments from '{filepath}'. Please combine them into a single coherent, detailed summary:\n\n{consolidated_text}"
