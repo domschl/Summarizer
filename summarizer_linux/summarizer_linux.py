@@ -2,6 +2,22 @@ import os
 import sys
 import argparse
 import signal
+import logging
+
+# Setup logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+logger = logging.getLogger("summarizer_linux")
+
+# Noise filter for external libraries
+class NoiseFilter(logging.Filter):
+    def filter(self, record):
+        msg = record.getMessage()
+        if "AFC is enabled" in msg: return False
+        if "HTTP Request" in msg and "200 OK" in msg: return False
+        return True
+
+for handler in logging.root.handlers:
+    handler.addFilter(NoiseFilter())
 
 # Suppress KeyboardInterrupt globally
 signal.signal(signal.SIGINT, signal.SIG_DFL)
@@ -22,7 +38,7 @@ MODEL_NAME = "gemma-4-26b-it-gguf"
 
 class LlamaCppEngine(BaseEngine):
     def __init__(self, repo_id: str = "unsloth/gemma-4-26B-A4B-it-GGUF", filename: str = "gemma-4-26B-A4B-it-UD-Q4_K_XL.gguf"):
-        print(f"Loading LlamaCpp model from {repo_id}...")
+        logger.info(f"Loading LlamaCpp model from {repo_id}...")
         model_path = hf_hub_download(repo_id=repo_id, filename=filename)
         
         self.llm = Llama(
@@ -54,7 +70,7 @@ class LlamaCppEngine(BaseEngine):
 
 def summarize_file(source_file: str, destination_file: str):
     if not os.path.exists(source_file):
-        print(f"Error: Source file does not exist: {source_file}")
+        logger.error(f"Source file does not exist: {source_file}")
         sys.exit(1)
         
     try:
@@ -72,7 +88,7 @@ def summarize_file(source_file: str, destination_file: str):
         cache = WorkCache()
         cache.cleanup_old_entries()
         
-        print(f"Initializing LlamaCpp Engine...")
+        logger.info(f"Initializing LlamaCpp Engine...")
         engine = LlamaCppEngine()
         
         summary_text = chunked_summarize(engine, md_text, source_file, chunk_size, source_md_hash)
@@ -99,12 +115,10 @@ def summarize_file(source_file: str, destination_file: str):
             os.fsync(f.fileno())
         os.replace(temp_file, destination_file)
             
-        print(f"Successfully wrote summary to: {destination_file}")
+        logger.info(f"Successfully wrote summary to: {destination_file}")
         sys.exit(0)
     except Exception as e:
-        print(f"Error during summarization: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.exception(f"Error during summarization: {e}")
         sys.exit(1)
 
 def main():

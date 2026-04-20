@@ -17,7 +17,7 @@ def chunked_summarize(engine: BaseEngine, content: str, filepath: str, chunk_siz
         return ""
         
     if num_chunks == 1:
-        print(f"\n--> Document '{filename}' fits in one chunk. Summarizing directly...")
+        logger.info(f"Document '{filename}' fits in one chunk. Summarizing directly...")
         prompt_text = f"The following is the full text of '{filepath}'. Please provide a detailed summary:\n\n{content}"
         
         prompt = prompt_text
@@ -34,9 +34,9 @@ def chunked_summarize(engine: BaseEngine, content: str, filepath: str, chunk_siz
     
     if start_index > 0:
         if start_index >= num_chunks:
-            print(f"\n--> [{filename}] All chunks already processed. Resuming final consolidation...")
+            logger.info(f"[{filename}] All chunks already processed. Resuming final consolidation...")
         else:
-            print(f"\n--> [{filename}] Resuming from chunk {start_index+1}/{num_chunks}...")
+            logger.info(f"[{filename}] Resuming from chunk {start_index+1}/{num_chunks}...")
 
     for i in range(start_index, num_chunks):
         start = i * chunk_size
@@ -49,8 +49,7 @@ def chunked_summarize(engine: BaseEngine, content: str, filepath: str, chunk_siz
             continue
 
         chunk_start = time.time()
-        progress_msg = f"--> [{filename}] Summarizing chunk {i+1}/{num_chunks}..."
-        print(f"\r{progress_msg}", end="", flush=True)
+        logger.info(f"[{filename}] Summarizing chunk {i+1}/{num_chunks}...")
         
         prompt_text = f"Briefly summarize this part of document '{filepath}':\n\n{chunk}"
         
@@ -62,13 +61,13 @@ def chunked_summarize(engine: BaseEngine, content: str, filepath: str, chunk_siz
             
         output = engine.generate(prompt, max_tokens=500)
         duration = time.time() - chunk_start
-        print(f" ({duration:.1f}s)", end="", flush=True)
+        logger.info(f"[{filename}] Finished chunk {i+1}/{num_chunks} in {duration:.1f}s")
         
         extracted_output = get_answer_from_output(output)
         chunk_summaries.append(extracted_output)
         cache.save_progress(doc_hash, chunk_size, chunk_summaries, i + 1, filepath)
 
-    print(f"\n--> [{filename}] Consolidating final summary...")
+    logger.info(f"[{filename}] Consolidating final summary...")
     
     if not chunk_summaries:
         logger.info(f"No valid summaries generated for {filename}, returning empty summary.")

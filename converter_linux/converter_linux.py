@@ -10,11 +10,15 @@ from docling.datamodel.base_models import InputFormat
 from docling.document_converter import DocumentConverter, PdfFormatOption
 from docling.datamodel.pipeline_options import PdfPipelineOptions
 
+# Setup logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+logger = logging.getLogger("converter_linux")
+
 def convert(source_file: str, destination_file: str):
     sys.setrecursionlimit(10000)
     
     if not os.path.exists(source_file):
-        print(f"Error: Source file does not exist: {source_file}")
+        logger.error(f"Source file does not exist: {source_file}")
         sys.exit(1)
         
     ext = source_file.lower()
@@ -27,13 +31,13 @@ def convert(source_file: str, destination_file: str):
                 capture_output=True, text=True, check=True
             )
             os.replace(temp_dest, destination_file)
-            print(f"Successfully converted EPUB: {source_file} to {destination_file}")
+            logger.info(f"Successfully converted EPUB: {source_file} to {destination_file}")
             sys.exit(0)
         except subprocess.CalledProcessError as e:
-            print(f"Pandoc conversion failed: {e}")
+            logger.error(f"Pandoc conversion failed: {e}")
             sys.exit(1)
         except FileNotFoundError:
-            print("Error: pandoc is not installed or not in PATH.")
+            logger.error("Error: pandoc is not installed or not in PATH.")
             sys.exit(1)
             
     elif ext.endswith('.pdf'):
@@ -60,7 +64,7 @@ def convert(source_file: str, destination_file: str):
                 
             for start_page in range(0, total_pages, chunk_size):
                 end_page = min(start_page + chunk_size, total_pages)
-                print(f"Processing chunk: pages {start_page + 1} to {end_page} of {total_pages}...")
+                logger.info(f"Processing chunk: pages {start_page + 1} to {end_page} of {total_pages}...")
                 
                 # Write chunk to temp file in the same directory as source
                 temp_pdf_path = f"{source_file}.chunk_{start_page}_{end_page}.pdf"
@@ -98,14 +102,14 @@ def convert(source_file: str, destination_file: str):
                 f.write("\n\n".join(markdown_chunks))
             os.replace(temp_dest, destination_file)
                 
-            print(f"Successfully converted document: {source_file} to {destination_file}")
+            logger.info(f"Successfully converted document: {source_file} to {destination_file}")
             sys.exit(0)
             
         except Exception as e:
-            print(f"Docling conversion failed: {e}")
+            logger.error(f"Docling conversion failed: {e}")
             sys.exit(1)
     else:
-        print(f"Error: Unsupported file extension for {source_file}. Only .pdf and .epub are supported.")
+        logger.error(f"Error: Unsupported file extension for {source_file}. Only .pdf and .epub are supported.")
         sys.exit(1)
 
 def main():

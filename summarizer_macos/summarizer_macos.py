@@ -2,6 +2,22 @@ import os
 import sys
 import argparse
 import signal
+import logging
+
+# Setup logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+logger = logging.getLogger("summarizer_macos")
+
+# Noise filter for external libraries
+class NoiseFilter(logging.Filter):
+    def filter(self, record):
+        msg = record.getMessage()
+        if "AFC is enabled" in msg: return False
+        if "HTTP Request" in msg and "200 OK" in msg: return False
+        return True
+
+for handler in logging.root.handlers:
+    handler.addFilter(NoiseFilter())
 
 # Suppress KeyboardInterrupt globally
 signal.signal(signal.SIGINT, signal.SIG_DFL)
@@ -23,7 +39,7 @@ MODEL_NAME = "gemma-4-26b-it-mlx"
 
 class MLXEngine(BaseEngine):
     def __init__(self, model_id: str = "mlx-community/gemma-4-26b-a4b-it-4bit"):
-        print(f"Loading MLX model from {model_id}...")
+        logger.info(f"Loading MLX model from {model_id}...")
         self.model, self.processor = load(model_id)
         self.config = load_config(model_id)
 
@@ -48,7 +64,7 @@ class MLXEngine(BaseEngine):
 
 def summarize_file(source_file: str, destination_file: str):
     if not os.path.exists(source_file):
-        print(f"Error: Source file does not exist: {source_file}")
+        logger.error(f"Error: Source file does not exist: {source_file}")
         sys.exit(1)
         
     try:
@@ -65,7 +81,7 @@ def summarize_file(source_file: str, destination_file: str):
         cache = WorkCache()
         cache.cleanup_old_entries()
         
-        print(f"Initializing MLX Engine...")
+        logger.info(f"Initializing MLX Engine...")
         engine = MLXEngine()
         
         summary_text = chunked_summarize(engine, md_text, source_file, chunk_size, source_md_hash)
@@ -92,12 +108,10 @@ def summarize_file(source_file: str, destination_file: str):
             os.fsync(f.fileno())
         os.replace(temp_file, destination_file)
             
-        print(f"Successfully wrote summary to: {destination_file}")
+        logger.info(f"Successfully wrote summary to: {destination_file}")
         sys.exit(0)
     except Exception as e:
-        print(f"Error during summarization: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.exception(f"Error during summarization: {e}")
         sys.exit(1)
 
 def main():

@@ -1,6 +1,9 @@
 import os
 import json
 import time
+import logging
+
+logger = logging.getLogger("summarizer_core.utils")
 
 def get_platform_config(config_name: str, default_config: dict = None):
     config_file = os.path.expanduser(f"~/.config/summarizer/{config_name}")
@@ -16,6 +19,6 @@ def watchdog():
     """Exits the process if the parent process dies (PPID becomes 1)."""
     while True:
         if os.getppid() == 1:
-            print("Parent process died. Exiting...")
+            logger.warning("Parent process died. Exiting...")
             os._exit(1)
         time.sleep(2)
