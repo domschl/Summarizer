@@ -37,6 +37,8 @@ def chunked_summarize(engine: BaseEngine, content: str, filepath: str, chunk_siz
             logger.info(f"[{filename}] All chunks already processed. Resuming final consolidation...")
         else:
             logger.info(f"[{filename}] Resuming from chunk {start_index+1}/{num_chunks}...")
+    else:
+        logger.info(f"[{filename}] Starting summarization process...")
 
     for i in range(start_index, num_chunks):
         start = i * chunk_size
@@ -49,7 +51,7 @@ def chunked_summarize(engine: BaseEngine, content: str, filepath: str, chunk_siz
             continue
 
         chunk_start = time.time()
-        logger.info(f"[{filename}] Summarizing chunk {i+1}/{num_chunks}...")
+        # logger.info(f"[{filename}] Summarizing chunk {i+1}/{num_chunks}...")
         
         prompt_text = f"Briefly summarize this part of document '{filepath}':\n\n{chunk}"
         
