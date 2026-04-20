@@ -72,7 +72,7 @@ def summarize_file(source_file: str, destination_file: str):
             content = f.read()
             
         config = get_platform_config("summarizer_config_macos.json")
-        chunk_size = config.get("chunk_size", 50000)
+        chunk_size = config.get("chunk_size", 200000)
         
         metadata, md_text = parse_markdown(content)
         

@@ -38,7 +38,7 @@ def chunked_summarize(engine: BaseEngine, content: str, filepath: str, chunk_siz
         else:
             logger.info(f"[{filename}] Resuming from chunk {start_index+1}/{num_chunks}...")
     else:
-        logger.info(f"[{filename}] Starting summarization process...")
+        logger.info(f"[{filename}] Starting summarization process, {num_chunks} chunks...")
 
     for i in range(start_index, num_chunks):
         start = i * chunk_size
