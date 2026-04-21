@@ -103,11 +103,11 @@ class GemmaEngine(BaseEngine):
         self.client = genai.Client(api_key=api_key)
         self.last_request_time = 0
         self.min_delay = 4.1
+        self.backoff = 10
 
     def generate(self, prompt: str, max_tokens: int = 1500, temp: float = 0.2, repetition_penalty: float = 1.1) -> str:
         attempts = 0
         max_attempts = 10
-        backoff = 10
 
         while attempts < max_attempts:
             check_rate_limit()
@@ -126,6 +126,7 @@ class GemmaEngine(BaseEngine):
                     )
                 )
                 self.last_request_time = time.time()
+                self.backoff = 10 # Reset backoff on success
                 if not response.text: return "[Summary blocked or empty response]"
                 return response.text.strip()
             except Exception as e:
@@ -137,16 +138,24 @@ class GemmaEngine(BaseEngine):
                     tomorrow = datetime.now().replace(hour=8, minute=0, second=0, microsecond=0) + timedelta(days=1)
                     update_block_until(tomorrow.isoformat())
                     sys.exit(10)
-                if "429" in msg or "resource_exhausted" in msg or "rate limit" in msg:
-                    delay = parse_retry_delay(e) or backoff
+                status_code = getattr(e, 'code', None) or getattr(e, 'status_code', None)
+                if "429" in msg or "resource_exhausted" in msg or "rate limit" in msg or status_code == 429:
+                    delay = parse_retry_delay(e) or self.backoff
                     logger.warning(f"Rate limit hit. Suggest retry in {delay}s. Attempt {attempts}/{max_attempts}")
                     time.sleep(delay)
-                    backoff *= 2
+                    self.backoff *= 2
                     continue
-                if "503" in msg or "500" in msg or "unavailable" in msg or "internal_error" in msg or "deadline_exceeded" in msg:
-                    logger.warning(f"Transient error: {e}. Retrying in {backoff}s...")
-                    time.sleep(backoff)
-                    backoff *= 2
+                
+                is_transient = (
+                    "503" in msg or "500" in msg or 
+                    "unavailable" in msg or "internal_error" in msg or 
+                    "deadline_exceeded" in msg or
+                    status_code in (500, 503, 504)
+                )
+                if is_transient:
+                    logger.warning(f"Transient error (code={status_code}): {e}. Retrying in {self.backoff}s...")
+                    time.sleep(self.backoff)
+                    self.backoff *= 2
                     continue
                 raise e
         raise Exception("Max retry attempts reached.")
