@@ -143,7 +143,7 @@ class GemmaEngine(BaseEngine):
                     time.sleep(delay)
                     backoff *= 2
                     continue
-                if "503" in msg or "unavailable" in msg or "deadline_exceeded" in msg:
+                if "503" in msg or "500" in msg or "unavailable" in msg or "internal_error" in msg or "deadline_exceeded" in msg:
                     logger.warning(f"Transient error: {e}. Retrying in {backoff}s...")
                     time.sleep(backoff)
                     backoff *= 2
