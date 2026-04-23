@@ -1,71 +1,85 @@
-# Gemma 4 Summarizer
+# 📚 Document Summarizer
 
-A powerful, local AI-powered summarization tool designed for Apple Silicon. It uses **Gemma 4-26b-it** (via `mlx-vlm`) to process and summarize documents of any size.
+A powerful, distributed document processing and summarization pipeline optimized for high-quality AI-generated summaries. This system synchronizes a Calibre library with a Markdown-based knowledge base and generates comprehensive summaries using **Gemma 4** models.
 
-## Features
-- **Gemma 4-26B Inference**: Optimized with **TurboQuant** (4-bit quantization) for ultra-fast performance on Mac.
-- **Thinking Mode**: Shows the model's step-by-step reasoning for transparent and high-quality results.
-- **Automated Chunking**: Uses a **Map-Reduce** strategy to summarize large texts that exceed the model context limit.
-- **Document Conversion**: Built-in support for multiple formats:
-    - **Docling**: Automatically converts PDFs (perfect for technical ArXiv papers), DOCX, PPTX, and XLSX.
-    - **Pandoc**: Handles **EPUB** conversion into high-quality Markdown.
-    - **Source Code**: Reads and structures plain text and code files for easy analysis.
-- **Command Support**:
-    - `/summarize <filepath> [instructions]`: Summarize a file with optional specific goals (e.g., "in German").
-    - `/load <filepath> [instructions]`: Load a file and ask a question about it.
-    - Supports quoted filenames for paths with spaces (e.g., `/summarize "My File.pdf"`).
+## ✨ Features
 
-## Getting Started
+- **🔄 Two-Phase Synchronization**: Robust "Plan then Execute" architecture ensuring data integrity and reliable state management.
+- **🏗️ Distributed Architecture**: Separates document conversion from summarization, allowing for parallel processing and platform-specific optimizations.
+- **🧠 Gemma 4 Summarization**: Uses state-of-the-art **Gemma 4** models with support for "Thinking Mode" and Map-Reduce strategies for large documents.
+- **🛠️ Multi-Format Support**:
+    - **Docling**: High-fidelity conversion for PDFs (including math/ArXiv), DOCX, PPTX, and XLSX.
+    - **Pandoc**: Clean EPUB-to-Markdown conversion.
+- **⚡ Parallel Processing**: Built-in concurrency support for both conversion and summarization phases.
+- **🔗 Wiki-Ready Naming**: Automatic generation of deterministic, 80-character capped filenames compatible with modern wikis (e.g., Obsidian).
+- **💾 Work Caching**: Persistent hash-based caching to prevent redundant work and allow resuming interrupted tasks.
+
+## 🚀 Getting Started
 
 ### Prerequisites
-- Apple Silicon Mac (M1/M2/M3/M4)
 - Python 3.10+ (recommended with `uv`)
-- Node.js & npm (for the web interface)
+- [Pandoc](https://pandoc.org/installing.html) (for EPUB support)
+- macOS (Apple Silicon) or Linux for summarization engines.
 
 ### Installation
-Clone the repository and install dependencies:
 ```bash
 git clone https://codeberg.org/domschl/Summarizer.git
 cd Summarizer
 uv sync
 ```
 
-### Usage
+## 🛠️ Core Components
 
-#### Terminal Interface
-Run the script to start the interactive chat:
+### 1. Calibre Sync (`calibre_sync.py`)
+Orchestrates the conversion of books from your Calibre library into a Markdown-based repository. It extracts metadata, preserves covers (as icons), and converts documents using the best available tool for each format.
+
+**Usage:**
 ```bash
-uv run summarizer.py
+uv run calibre_sync.py [--concurrency N] [--dry-run]
+```
+- `--concurrency`: Number of parallel conversion processes.
+- `--dry-run`: Scans the library and shows the sync plan without making changes.
+
+### 2. Summarizer Sync (`summarizer_sync.py`)
+Orchestrates the summarization of the Markdown repository. It compares the current state of summaries with the source Markdown files and dispatches summarization tasks to the configured AI engine.
+
+**Usage:**
+```bash
+uv run summarizer_sync.py [--concurrency N] [--dry-run]
+```
+- `--concurrency`: Number of parallel summarization processes.
+- `--dry-run`: Scans source Markdown files and shows the summarization plan.
+
+## ⚙️ Configuration
+
+Both scripts use JSON configuration files located in `~/.config/summarizer/`.
+
+### Converter Configuration (`converter_config.json`)
+Controls how books are pulled from Calibre.
+```json
+{
+    "calibre_path": "~/ReferenceLibrary/Calibre Library",
+    "markdown_path": "~/AINotes/MarkdownBooks",
+    "target_series": ["anthropology", "music", "history"]
+}
 ```
 
-#### Web Interface
-The project includes a modern, premium web interface. To run it, you need two terminals:
+### Summarizer Configuration (`summarizer_config.json`)
+Controls how Markdown files are summarized.
+```json
+{
+    "markdown_path": "~/AINotes/MarkdownBooks",
+    "summaries_path": "~/AINotes/BookSummaries",
+    "target_series": ["anthropology", "music", "history"],
+    "summarizer_name": "summarizer_macos"
+}
+```
+Available `summarizer_name` options:
+- `summarizer_macos`: Optimized for Apple Silicon (MLX).
+- `summarizer_linux`: Standard Linux implementation.
+- `summarizer_gc_gemma4_31b`: Google Cloud hosted Gemma 4 implementation.
 
-1. **Start the Backend**:
-   ```bash
-   cd web-interface/backend
-   uv run main.py
-   ```
-   *The backend runs on `http://localhost:8000`.*
-
-2. **Start the Frontend**:
-   ```bash
-   cd web-interface/frontend
-   npm install
-   npm run dev
-   ```
-   *The frontend runs on `http://localhost:3000`.*
-
-## Web Interface Features
-- **Modern Dark UI**: Elegant, responsive interface with glassmorphism.
-- **LaTeX Math Support**: Correctly renders complex formulas and formatted Markdown.
-- **Thinking Pane**: Visualizes the model's step-by-step reasoning process.
-- **Direct Upload**: Easily upload files via the UI for instant loading or summarization.
-
-## How It Works
-- **Small Files**: Small files are read directly into the context for single-pass summarization.
-- **Large Files**: For massive documents, the script splits the text into chunks, summarizes each part individually, and then executes a final "consolidation" pass to create a coherent summary.
-- **Multi-tool Conversion**: Non-text files are automatically processed using **Docling** (PDFs/Office docs) or **Pandoc** (EPUB) to maintain structural integrity and formatting for the LLM.
-
-## Model
-Uses `mlx-community/gemma-4-26b-a4b-it-4bit` (via `mlx-vlm`).
+## 🛡️ Data Integrity
+- **SHA-256 Hashing**: Tracks source file changes to automatically trigger reconversions or re-summarizations only when content actually changes.
+- **UUID Tracking**: Uses Calibre UUIDs to track documents even if titles or authors change in metadata.
+- **Atomic Writes**: Ensures files are never left in a corrupted state during interruptions.
